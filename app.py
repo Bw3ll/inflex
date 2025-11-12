@@ -156,3 +156,5 @@ def get_report(hash):
 
 if __name__ == "__main__":
     app.run(debug=True)
+    # app.run(host='0.0.0.0', port=5000, debug=True)  # If you want to bind all IP's to this server so other devices on the same network connect run the app using this configuration
+
