@@ -1,0 +1,138 @@
+<!--TODO: Update dashboard to represent the actual point malware, benign, or errored out file-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard - INFLEX</title>
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-[#EAEAEA] min-h-screen p-6">
+
+  <!-- Navbar -->
+  <header class="navbar">
+  <div class="logo">INFLEX</div>
+  <nav class="menu">
+    <a href="/">Dashboard</a>
+    <a href="/uploads">Uploads</a>
+    <a href="/search">Reports</a>
+  </nav>
+</header>
+
+  <!-- Main Content -->
+  <div class="max-w-6xl mx-auto">
+    <h1 class="text-2xl font-bold text-[#231F20] mb-4">Results Dashboard</h1>
+
+    <!-- Charts Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div class="bg-white rounded-2xl shadow-lg p-6">
+        <h2 class="font-bold text-lg mb-4 text-[#8E793E]">Result Distribution</h2>
+        <canvas id="pieChart"></canvas>
+      </div>
+      <div class="bg-white rounded-2xl shadow-lg p-6">
+        <h2 class="font-bold text-lg mb-4 text-[#8E793E]">Results by Category</h2>
+        <canvas id="barChart"></canvas>
+      </div>
+    </div>
+
+    <!-- Files List -->
+    <div class="bg-white rounded-2xl shadow-lg p-6">
+      <h2 class="font-bold text-lg mb-4 text-[#8E793E]">Files</h2>
+      <ul id="fileList" class="divide-y divide-gray-200"></ul>
+    </div>
+  </div>
+
+  <script>
+    async function loadAndRender() {
+      try {
+        const res = await fetch("/api/results");
+        const items = await res.json();
+
+        const categoryCounts = { "Suspected": 0, "Clean": 0, "Errors": 0 };
+        const fileList = document.getElementById("fileList");
+        fileList.innerHTML = "";
+
+        items.forEach(it => {
+          const extracted = it.extracted || it;
+          const vt = extracted.virustotal || {};
+          const malicious = vt.malicious || 0;
+          const severity = malicious > 0 ? "Suspected" : "Clean";
+          categoryCounts[severity] = (categoryCounts[severity] || 0) + 1;
+
+          const li = document.createElement("li");
+          li.className = "py-3 px-2 flex justify-between items-center hover:bg-gray-50";
+
+          const left = document.createElement("div");
+          left.innerHTML = `
+            <div class="font-semibold text-[#231F20]">${extracted.filename || "unknown"}</div>
+            <div class="text-sm text-gray-600">${it.hashes?.sha256 || "no hash"}</div>
+          `;
+
+          const right = document.createElement("div");
+          right.innerHTML = `
+            <a href="/report?hash=${it.hashes?.sha256}"
+               class="px-4 py-2 rounded bg-[#AD974F] text-white hover:bg-[#8E793E] transition-colors inline-block">
+              View Report
+            </a>
+          `;
+
+          li.appendChild(left);
+          li.appendChild(right);
+          fileList.appendChild(li);
+        });
+
+        // Build charts
+        const pieLabels = Object.keys(categoryCounts);
+        const pieData = Object.values(categoryCounts);
+
+        // Pie Chart
+        const pieCtx = document.getElementById("pieChart").getContext("2d");
+        new Chart(pieCtx, {
+          type: 'pie',
+          data: {
+            labels: pieLabels,
+            datasets: [{
+              data: pieData,
+              backgroundColor: ['#AD974F', '#8E793E', '#231F20']
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: true
+          }
+        });
+
+        // Bar Chart
+        const barCtx = document.getElementById("barChart").getContext("2d");
+        new Chart(barCtx, {
+          type: 'bar',
+          data: {
+            labels: pieLabels,
+            datasets: [{
+              label: 'Count',
+              data: pieData,
+              backgroundColor: ['#AD974F', '#8E793E', '#231F20']
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            scales: {
+              y: {
+                beginAtZero: true
+              }
+            }
+          }
+        });
+      } catch (err) {
+        console.error("Error loading dashboard data:", err);
+      }
+    }
+
+    loadAndRender();
+  </script>
+</body>
+</html>
