@@ -1,0 +1,182 @@
+<!--TODO: Add in option to download the source file for that reports page-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>File Analysis Report - INFLEX</title>
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#EAEAEA] min-h-screen p-6">
+
+  <!-- Navbar -->
+  <header class="navbar">
+    <div class="logo">INFLEX</div>
+    <nav class="menu">
+      <a href="/">Dashboard</a>
+      <a href="/uploads">Uploads</a>
+      <a href="/search">Reports</a>
+    </nav>
+  </header>
+
+  <!-- Main Content -->
+  <div class="max-w-6xl mx-auto space-y-6" id="reportContent">
+    <div class="text-center py-8">
+      <div class="inline-block animate-spin rounded-full h-12 w-12 border-b-4 border-[#AD974F]"></div>
+      <p class="text-gray-600 mt-4">Loading report...</p>
+    </div>
+  </div>
+
+  <script>
+    async function loadReport() {
+      const params = new URLSearchParams(window.location.search);
+      const hash = params.get("hash");
+
+      if (!hash) {
+        document.getElementById("reportContent").innerHTML = `
+          <div class="bg-white rounded-2xl shadow-lg p-6 text-center">
+            <p class="text-red-600 font-semibold">No hash provided</p>
+            <p class="text-gray-500 text-sm mt-2">Please select a file from the dashboard.</p>
+            <a href="/" class="inline-block mt-4 btn-primary">Go to Dashboard</a>
+          </div>
+        `;
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/report/${hash}`);
+        const data = await res.json();
+
+        if (data.error) {
+          document.getElementById("reportContent").innerHTML = `
+            <div class="bg-white rounded-2xl shadow-lg p-6 text-center">
+              <p class="text-red-600 font-semibold">${data.error}</p>
+              <a href="/" class="inline-block mt-4 btn-primary">Go to Dashboard</a>
+            </div>
+          `;
+          return;
+        }
+
+        const extracted = data.extracted || {};
+        const mitre = data.mitre || {};
+        const description = data.description || {};
+
+        const hashes = extracted.hashes || {};
+        const pe_info = extracted.pe_info || {};
+        const imports = (pe_info.imports || []).flatMap(d => d.functions || []);
+        const yara = extracted.yara || [];
+        const strings = extracted.strings || [];
+        const vt = extracted.virustotal || {};
+        const vt_status = vt.status || {};
+        const mitre_map = mitre.mapping || {};
+
+        document.getElementById("reportContent").innerHTML = `
+          <!-- File Overview -->
+          <div class="bg-white rounded-2xl shadow-lg p-6">
+            <h1 class="text-2xl font-bold text-[#231F20] mb-6">File Analysis Report</h1>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
+              <div class="space-y-2">
+                <p class="flex justify-between">
+                  <span class="font-bold text-gray-700">MD5:</span>
+                  <span class="text-gray-600 font-mono text-xs">${hashes.md5 || "Unknown"}</span>
+                </p>
+                <p class="flex justify-between">
+                  <span class="font-bold text-gray-700">SHA1:</span>
+                  <span class="text-gray-600 font-mono text-xs">${hashes.sha1 || "Unknown"}</span>
+                </p>
+                <p class="flex justify-between">
+                  <span class="font-bold text-gray-700">SHA256:</span>
+                  <span class="text-gray-600 font-mono text-xs break-all">${hashes.sha256 || "Unknown"}</span>
+                </p>
+              </div>
+              <div class="space-y-2">
+                <p>
+                  <span class="font-bold text-gray-700">VirusTotal:</span>
+                  ${vt.permalink
+                    ? `<a href="${vt.permalink}" target="_blank" class="text-[#AD974F] hover:text-[#8E793E] ml-2">View Report →</a>`
+                    : '<span class="text-gray-500 ml-2">Unknown</span>'}
+                </p>
+                <p>
+                  <span class="font-bold text-gray-700">Detections:</span>
+                  <span class="ml-2">
+                    <span class="font-bold text-red-600">${vt_status.malicious || 0}</span> malicious /
+                    <span class="text-gray-600">${vt_status.undetected || 0}</span> undetected
+                  </span>
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- LLM Description -->
+          <div class="bg-white rounded-2xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">AI Analysis</h2>
+            <div class="bg-gray-50 rounded-lg p-4">
+              <p class="text-gray-700 leading-relaxed">
+                ${description.description || "No AI analysis available for this file."}
+              </p>
+            </div>
+          </div>
+
+          <!-- Imported Functions -->
+          <div class="bg-white rounded-2xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">Imported Functions</h2>
+            ${imports.length
+              ? `<div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+                   ${imports.map(fn =>
+                     `<span class="px-3 py-2 bg-gray-100 rounded text-sm font-mono text-gray-700">${fn}</span>`
+                   ).join("")}
+                 </div>`
+              : '<p class="text-gray-500">No imported functions detected.</p>'}
+          </div>
+
+          <!-- Suspicious Strings -->
+          <div class="bg-white rounded-2xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">Suspicious Strings</h2>
+            ${strings.length
+              ? `<pre class="bg-gray-100 p-4 rounded text-sm overflow-x-auto font-mono text-gray-700">${strings.join("\n")}</pre>`
+              : '<p class="text-gray-500">No suspicious strings detected.</p>'}
+          </div>
+
+          <!-- YARA Matches -->
+          <div class="bg-white rounded-2xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">YARA Matches</h2>
+            ${Array.isArray(yara) && yara.length
+              ? `<ul class="list-disc ml-6 space-y-1 text-gray-700">
+                   ${yara.map(y => `<li>${y}</li>`).join("")}
+                 </ul>`
+              : '<p class="text-gray-500">No YARA rules matched.</p>'}
+          </div>
+
+          <!-- MITRE ATT&CK -->
+          <div class="bg-white rounded-2xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">MITRE ATT&CK Techniques</h2>
+            ${Object.values(mitre_map).length
+              ? `<ul class="space-y-3">
+                   ${Object.values(mitre_map).map(t => `
+                     <li class="border-l-4 border-[#AD974F] pl-4 py-2">
+                       <div class="font-bold text-[#231F20]">${t.technique_id}: ${t.name}</div>
+                       <div class="text-sm text-gray-600 mt-1">${t.description}</div>
+                     </li>
+                   `).join("")}
+                 </ul>`
+              : '<p class="text-gray-500">No MITRE ATT&CK techniques identified.</p>'}
+          </div>
+        `;
+      } catch (err) {
+        document.getElementById("reportContent").innerHTML = `
+          <div class="bg-white rounded-2xl shadow-lg p-6 text-center">
+            <p class="text-red-600 font-semibold">Error loading report</p>
+            <p class="text-gray-500 text-sm mt-2">Please try again or contact support.</p>
+            <a href="/" class="inline-block mt-4 btn-primary">Go to Dashboard</a>
+          </div>
+        `;
+        console.error(err);
+      }
+    }
+
+    loadReport();
+  </script>
+</body>
+</html>
