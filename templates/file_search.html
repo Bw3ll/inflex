@@ -1,0 +1,225 @@
+<!--TODO: Make the whole thing dynamic with the searching features and loading in the files reports page, and not in general we prob need to clean up the reports to just one file per sample-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Search Reports - INFLEX</title>
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#EAEAEA] min-h-screen p-6">
+
+  <!-- Navbar -->
+  <header class="navbar">
+    <div class="logo">INFLEX</div>
+    <nav class="menu">
+      <a href="/">Dashboard</a>
+      <a href="/uploads">Uploads</a>
+      <a href="/search">Reports</a>
+    </nav>
+  </header>
+
+  <!-- Search Bar -->
+  <div class="flex justify-center items-center mb-6 mt-4 max-w-7xl mx-auto">
+    <input
+      id="searchBox"
+      type="text"
+      class="search-bar"
+      placeholder="Search by hash, DLL, MITRE ID, or keyword..."
+    >
+    <button id="searchBtn" class="btn-primary ml-3">Search</button>
+  </div>
+
+  <!-- Main Content -->
+  <div class="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-[280px_1fr] gap-6">
+
+    <!-- Left Filter Panel -->
+    <aside class="bg-white rounded-2xl shadow-lg p-6 filter-section h-fit">
+      <h3 class="text-xl mb-4">Filters</h3>
+
+      <div class="mb-6">
+        <h4 class="font-semibold mb-3 text-gray-700">DLL Imports</h4>
+        <div class="space-y-2">
+          <label class="flex items-center space-x-2 cursor-pointer">
+            <input type="checkbox" class="dll-filter w-4 h-4" value="KERNEL32.dll">
+            <span class="text-sm">KERNEL32.dll</span>
+          </label>
+          <label class="flex items-center space-x-2 cursor-pointer">
+            <input type="checkbox" class="dll-filter w-4 h-4" value="msvcrt.dll">
+            <span class="text-sm">msvcrt.dll</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="mb-6">
+        <h4 class="font-semibold mb-3 text-gray-700">MITRE Techniques</h4>
+        <div class="space-y-2">
+          <label class="flex items-center space-x-2 cursor-pointer">
+            <input type="checkbox" class="mitre-filter w-4 h-4" value="T1574">
+            <span class="text-sm">T1574</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="mb-6">
+        <h4 class="font-semibold mb-3 text-gray-700">Entropy Range</h4>
+        <input
+          id="entropyRange"
+          type="range"
+          min="0"
+          max="8"
+          step="0.1"
+          value="8"
+          class="slider"
+        >
+        <div class="text-sm text-gray-600 mt-2">
+          Max: <span id="entropyValue" class="font-semibold text-[#AD974F]">8.0</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Results Panel -->
+    <main class="bg-white rounded-2xl shadow-lg p-6">
+      <h2 class="font-bold text-xl mb-4 text-[#8E793E]">Search Results</h2>
+      <div id="resultsContainer"></div>
+    </main>
+  </div>
+
+  <script>
+    let combinedData = [];
+
+    async function loadData() {
+      try {
+        const indexRes = await fetch("../results/index.json");
+        const indexList = await indexRes.json();
+
+        const files = await Promise.all(
+          indexList.map(f => fetch(`results/${f}`).then(r => r.json()))
+        );
+
+        combinedData = files.map(file => {
+          const mitreFile = file.mapping ? file : null;
+          const extractedFile = file.hashes ? file : null;
+
+          if (mitreFile && extractedFile) {
+            return { ...extractedFile, mitre: Object.values(mitreFile.mapping || {}) };
+          }
+          return file;
+        });
+
+        renderResults(combinedData);
+      } catch (err) {
+        console.error("Error loading results:", err);
+        const container = document.getElementById("resultsContainer");
+        container.innerHTML = `
+          <div class="text-center py-8">
+            <p class="text-red-600 font-semibold">Failed to load data from results/ directory.</p>
+            <p class="text-gray-500 text-sm mt-2">Please ensure the results directory exists and contains valid JSON files.</p>
+          </div>
+        `;
+      }
+    }
+
+    function renderResults(data) {
+      const container = document.getElementById("resultsContainer");
+      container.innerHTML = "";
+
+      if (!data.length) {
+        container.innerHTML = `
+          <div class="text-center py-8">
+            <p class="text-gray-600">No results found.</p>
+            <p class="text-gray-500 text-sm mt-2">Try adjusting your search criteria or filters.</p>
+          </div>
+        `;
+        return;
+      }
+
+      data.forEach(item => {
+        const vt = item.virustotal?.status || {};
+        const imports = item.pe_info?.imports?.map(i => i.dll).join(", ") || "N/A";
+        const mitreTags = (item.mitre || [])
+          .map(m => `<span class="result-tag">${m.technique_id}</span>`)
+          .join(" ");
+
+        const div = document.createElement("div");
+        div.className = "result-card";
+        div.innerHTML = `
+          <div class="font-bold text-lg mb-2 text-[#231F20]">
+            ${item.hashes?.sha256 || "Unknown File"}
+          </div>
+          <div class="text-sm text-gray-700 mb-1">
+            <span class="font-semibold">MD5:</span> ${item.hashes?.md5 || "N/A"}
+          </div>
+          <div class="text-sm text-gray-700 mb-1">
+            <span class="font-semibold">Imports:</span> ${imports}
+          </div>
+          <div class="text-sm text-gray-700 mb-2">
+            <span class="font-semibold">VT Detections:</span>
+            <span class="font-bold text-[#AD974F]">${vt.malicious || 0}</span>
+          </div>
+          ${mitreTags ? `<div class="mt-2">${mitreTags}</div>` : ''}
+        `;
+        container.appendChild(div);
+      });
+    }
+
+    function applyFilters() {
+      const query = document.getElementById("searchBox").value.toLowerCase();
+      const entropyLimit = parseFloat(document.getElementById("entropyRange").value);
+      const dllChecked = Array.from(document.querySelectorAll(".dll-filter:checked"))
+        .map(cb => cb.value);
+      const mitreChecked = Array.from(document.querySelectorAll(".mitre-filter:checked"))
+        .map(cb => cb.value);
+
+      const filtered = combinedData.filter(item => {
+        const text = JSON.stringify(item).toLowerCase();
+
+        // Text match
+        if (query && !text.includes(query)) return false;
+
+        // DLL filter
+        if (dllChecked.length &&
+            !item.pe_info?.imports?.some(i => dllChecked.includes(i.dll))) {
+          return false;
+        }
+
+        // MITRE filter
+        if (mitreChecked.length &&
+            !item.mitre?.some(m => mitreChecked.includes(m.technique_id))) {
+          return false;
+        }
+
+        // Entropy filter
+        const maxEntropy = Math.max(
+          ...(item.pe_info?.sections?.map(s => s.entropy) || [0])
+        );
+        if (maxEntropy > entropyLimit) return false;
+
+        return true;
+      });
+
+      renderResults(filtered);
+    }
+
+    // Event listeners
+    document.getElementById("searchBtn").addEventListener("click", applyFilters);
+
+    document.getElementById("entropyRange").addEventListener("input", e => {
+      document.getElementById("entropyValue").textContent = e.target.value;
+      applyFilters();
+    });
+
+    document.querySelectorAll(".dll-filter, .mitre-filter")
+      .forEach(cb => cb.addEventListener("change", applyFilters));
+
+    document.getElementById("searchBox").addEventListener("keypress", e => {
+      if (e.key === "Enter") applyFilters();
+    });
+
+    // Load data on page load
+    loadData();
+  </script>
+</body>
+</html>
