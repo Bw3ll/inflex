@@ -1,0 +1,178 @@
+<!--TODO: Add in checkbox for CAPEv2 sandbox option-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upload - INFLEX</title>
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#EAEAEA] min-h-screen p-6">
+
+  <!-- Navbar -->
+  <header class="navbar">
+    <div class="logo">INFLEX</div>
+    <nav class="menu">
+      <a href="/">Dashboard</a>
+      <a href="/uploads">Uploads</a>
+      <a href="/search">Reports</a>
+    </nav>
+  </header>
+
+  <!-- Main Content -->
+  <div class="max-w-6xl mx-auto">
+    <section class="bg-white rounded-2xl shadow-lg p-6">
+      <h2 class="text-lg font-bold mb-4 text-[#8E793E]">Upload Files</h2>
+
+      <!-- Upload Box -->
+      <div id="uploadBox" class="upload-box">
+        <p class="text-gray-700 mb-2">Drag & Drop .exe Files Here</p>
+        <button id="browseBtn" class="btn-primary mt-3">Browse Files</button>
+        <input type="file" id="fileInput" accept=".exe" multiple style="display:none"/>
+      </div>
+
+      <!-- File Table -->
+      <div class="overflow-x-auto">
+        <table id="fileTable" class="w-full mt-4">
+          <thead>
+            <tr>
+              <th class="p-3">#</th>
+              <th class="p-3">File Name</th>
+              <th class="p-3">Size</th>
+              <th class="p-3">Type</th>
+              <th class="p-3">Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <!-- Submit Button -->
+      <div class="mt-6 text-right">
+        <button id="submitBtn" class="btn-secondary px-6 py-2">
+          Submit for Analysis
+        </button>
+      </div>
+    </section>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay" class="loading-overlay hidden">
+    <div class="flex flex-col items-center">
+      <div class="loading-spinner"></div>
+      <p class="mt-4 text-white font-semibold">Analyzing files, please wait...</p>
+    </div>
+  </div>
+
+  <script>
+    const uploadBox = document.getElementById("uploadBox");
+    const fileInput = document.getElementById("fileInput");
+    const browseBtn = document.getElementById("browseBtn");
+    const fileTableBody = document.querySelector("#fileTable tbody");
+
+    let files = [];
+
+    function renderTable() {
+      fileTableBody.innerHTML = "";
+
+      if (files.length === 0) {
+        fileTableBody.innerHTML = `
+          <tr>
+            <td colspan="5" class="text-center py-4 text-gray-500">No files selected</td>
+          </tr>
+        `;
+        return;
+      }
+
+      files.forEach((file, idx) => {
+        const row = document.createElement("tr");
+        row.className = "hover:bg-gray-50";
+        row.innerHTML = `
+          <td class="p-3">${idx + 1}</td>
+          <td class="p-3">${file.name}</td>
+          <td class="p-3">${(file.size / 1024).toFixed(1)} KB</td>
+          <td class="p-3">${file.type || "PE32"}</td>
+          <td class="p-3">
+            <button class="delete-btn" data-idx="${idx}">Delete</button>
+          </td>
+        `;
+        fileTableBody.appendChild(row);
+      });
+
+      document.querySelectorAll(".delete-btn").forEach(btn => {
+        btn.addEventListener("click", e => {
+          const idx = parseInt(e.target.dataset.idx);
+          files.splice(idx, 1);
+          renderTable();
+        });
+      });
+    }
+
+    function handleFiles(selectedFiles) {
+      const newFiles = [...selectedFiles].filter(file => {
+        if (!file.name.toLowerCase().endsWith(".exe")) {
+          alert(`Skipping ${file.name}: Only .exe files allowed`);
+          return false;
+        }
+        return true;
+      });
+
+      files.push(...newFiles);
+      renderTable();
+    }
+
+    // Submit handler
+    document.getElementById("submitBtn").addEventListener("click", async () => {
+      if (files.length === 0) {
+        alert("Please select at least one file before submitting.");
+        return;
+      }
+
+      document.getElementById("loadingOverlay").classList.remove("hidden");
+
+      const uploads = files.map(file => {
+        const formData = new FormData();
+        formData.append("file", file);
+        return fetch("/api/upload", { method: "POST", body: formData })
+          .then(res => res.json())
+          .then(data => console.log("Uploaded:", data))
+          .catch(err => console.error("Upload error:", err));
+      });
+
+      try {
+        await Promise.all(uploads);
+        window.location.href = "/";
+      } catch (err) {
+        console.error("One or more uploads failed", err);
+        alert("Some files failed to upload. Please check the console.");
+        document.getElementById("loadingOverlay").classList.add("hidden");
+      }
+    });
+
+    // Drag & drop handlers
+    uploadBox.addEventListener("dragover", e => {
+      e.preventDefault();
+      uploadBox.classList.add("dragover");
+    });
+
+    uploadBox.addEventListener("dragleave", () => {
+      uploadBox.classList.remove("dragover");
+    });
+
+    uploadBox.addEventListener("drop", e => {
+      e.preventDefault();
+      uploadBox.classList.remove("dragover");
+      handleFiles(e.dataTransfer.files);
+    });
+
+    // File input handlers
+    browseBtn.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => handleFiles(fileInput.files));
+
+    // Initial render
+    renderTable();
+  </script>
+</body>
+</html>
