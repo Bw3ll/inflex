@@ -10,11 +10,11 @@
 
 import os
 import sys
-import shutil
 import subprocess
 import json
 import hashlib
 import re
+from pathlib import Path
 
 # Adjust this if your distro name is different
 WSL_DISTRO = "Ubuntu"
@@ -26,15 +26,6 @@ def to_wsl_path(win_path: str) -> str:
     drive, rest = os.path.splitdrive(win_path)
     drive = drive.rstrip(":").lower()
     return f"/mnt/{drive}{rest.replace(os.sep, '/')}"
-
-
-def file_sha256(path: str) -> str:
-    """Compute SHA256 hash of a file."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def run_radare2_cmd(binary_path: str) -> str:
@@ -67,11 +58,19 @@ def run_radare2_pdfj(binary_path: str, addr: int):
     return json.loads(output)
 
 
-def extract_function_hashes(binary_path: str, out_json: str = None):
+def extract_function_hashes(binary_path: str):
+    """
+    Extract function hashes from a binary.
+    Returns a dictionary with disassembly data to be added to existing JSON.
+    """
     print(f"[+] Running radare2 analysis on: {binary_path}")
 
     # Step 1: run analysis + aflj
-    aflj_out = run_radare2_cmd(binary_path)
+    try:
+        aflj_out = run_radare2_cmd(binary_path)
+    except Exception as e:
+        print(f"[-] Failed to run radare2 analysis: {e}")
+        return None
 
     # Filtering rules
     SKIP_PREFIXES = ("sym._", "sym.__mingw", "sym.__")
@@ -113,104 +112,183 @@ def extract_function_hashes(binary_path: str, out_json: str = None):
             "mnemonics": normalized_ops,
         })
 
-    # Output JSON
-    if not out_json:
-        base = os.path.basename(binary_path)
-        out_json = f"{base}_functions.json"
+    print(f"[+] Extracted {len(results)} functions")
 
-    filehash = file_sha256(binary_path)
-
-    with open(out_json, "w", encoding="utf-8") as fh:
-        json.dump(
-            {
-                "binary": os.path.abspath(binary_path),
-                "sha256": filehash,
-                "functions": results,
-            },
-            fh,
-            indent=2,
-        )
-
-    print(
-        f"[+] Wrote filtered function hashes to: {out_json} "
-        f"(functions: {len(results)}, sha256: {filehash})"
-    )
-    return out_json
+    return {
+        "functions": results,
+        "function_count": len(results),
+        "similar_binaries": []
+    }
 
 
-def compare_binaries(file1: str, file2: str, out_json: str = None):
+def calculate_similarity(funcs1: list, funcs2: list) -> float:
     """
-    Compare two JSON outputs of extract_function_hashes().
-    Returns similarity metrics and shared function hashes.
-    Optionally writes results to a JSON file.
+    Calculate Jaccard similarity between two lists of function hashes.
     """
+    set1 = {f["func_hash"] for f in funcs1}
+    set2 = {f["func_hash"] for f in funcs2}
 
-    with open(file1, "r", encoding="utf-8") as f1:
-        data1 = json.load(f1)
-    with open(file2, "r", encoding="utf-8") as f2:
-        data2 = json.load(f2)
-
-    funcs1 = {f["func_hash"]: f for f in data1["functions"]}
-    funcs2 = {f["func_hash"]: f for f in data2["functions"]}
-
-    set1, set2 = set(funcs1.keys()), set(funcs2.keys())
     intersection = set1 & set2
     union = set1 | set2
 
-    jaccard = len(intersection) / len(union) if union else 0
-    overlap1 = len(intersection) / len(set1) if set1 else 0
-    overlap2 = len(intersection) / len(set2) if set2 else 0
+    if not union:
+        return 0.0
 
-    result = {
-        "binary1": data1["binary"],
-        "sha256_file1": data1.get("sha256"),
-        "binary2": data2["binary"],
-        "sha256_file2": data2.get("sha256"),
-        "functions_in_file1": len(set1),
-        "functions_in_file2": len(set2),
-        "shared_functions": len(intersection),
-        "jaccard_index": jaccard,
-        "overlap_file1": overlap1,
-        "overlap_file2": overlap2,
-        "shared_function_details": [
-            {
-                "func_hash": h,
-                "file1_name": funcs1[h]["name"],
-                "file2_name": funcs2[h]["name"]
-            }
-            for h in intersection
-        ],
-    }
+    return len(intersection) / len(union)
 
-    if out_json:
-        with open(out_json, "w", encoding="utf-8") as fh:
-            json.dump(result, fh, indent=2)
-        print(f"[+] Wrote comparison results to: {out_json}")
 
-    print("[*] Comparison summary:")
-    print(f"  File 1: {os.path.basename(file1)}")
-    print(f"    Path: {result['binary1']}")
-    print(f"    SHA256: {result['sha256_file1']}")
-    print(f"    Functions: {result['functions_in_file1']}")
-    print(f"  File 2: {os.path.basename(file2)}")
-    print(f"    Path: {result['binary2']}")
-    print(f"    SHA256: {result['sha256_file2']}")
-    print(f"    Functions: {result['functions_in_file2']}")
-    print(f"  Shared functions: {result['shared_functions']}")
-    print(f"  Jaccard index: {result['jaccard_index']:.2f}")
-    print(f"  Overlap wrt file1: {result['overlap_file1']:.2f}")
-    print(f"  Overlap wrt file2: {result['overlap_file2']:.2f}")
+def compare_with_existing(current_json_path: Path, current_sha256: str, results_dir: Path, threshold: float = 0.6):
+    """
+    Compare current file with all existing files in results directory.
+    Update both files if similarity exceeds threshold.
 
-    return result
+    Args:
+        current_json_path: Path to the current file's JSON
+        current_sha256: SHA256 hash of current binary
+        results_dir: Directory containing all result JSONs
+        threshold: Similarity threshold (default 0.6 = 60%)
+
+    Returns:
+        List of similar binaries found
+    """
+
+    # TODO: Make this more efficient as currently it is very slow having to check each funciton hash with all others individually
+
+    print(f"[+] Comparing with existing files in {results_dir}...")
+
+    # Load current file data
+    with open(current_json_path, "r", encoding="utf-8") as f:
+        current_data = json.load(f)
+
+    # Validate current file has disassembly data
+    if "disassembly" not in current_data or "functions" not in current_data["disassembly"]:
+        print(f"[-] Error: Current file missing disassembly data")
+        return []
+
+    current_functions = current_data["disassembly"]["functions"]
+    similar_found = []
+
+    # Iterate through all JSON files in results directory
+    for other_file in results_dir.glob("*.json"):
+        # Skip comparing with itself
+        if other_file.name == current_json_path.name:
+            continue
+
+        try:
+            with open(other_file, "r", encoding="utf-8") as f:
+                other_data = json.load(f)
+
+            # Skip files without disassembly data
+            if "disassembly" not in other_data or "functions" not in other_data["disassembly"]:
+                continue
+
+            # Get the SHA256 from the filename or hash field
+            other_sha256 = other_data.get("hash", {}).get("sha256") or other_file.stem
+            other_functions = other_data["disassembly"]["functions"]
+
+            # Calculate similarity
+            similarity = calculate_similarity(current_functions, other_functions)
+
+            print(f"  [{other_file.name}] Similarity: {similarity:.2%}")
+
+            # If similarity exceeds threshold, update both files
+            if similarity >= threshold:
+                similar_info = {
+                    "sha256": other_sha256,
+                    "similarity": round(similarity, 4),
+                    "file_path": other_data.get("file_info", {}).get("path", "unknown")
+                }
+                similar_found.append(similar_info)
+
+                # Update the other file to include reference to current file
+                other_similar = other_data["disassembly"].get("similar_binaries", [])
+
+                # Check if current file is already in the list
+                if not any(s["sha256"] == current_sha256 for s in other_similar):
+                    other_similar.append({
+                        "sha256": current_sha256,
+                        "similarity": round(similarity, 4),
+                        "file_path": current_data.get("file_info", {}).get("path", "unknown")
+                    })
+                    other_data["disassembly"]["similar_binaries"] = other_similar
+
+                    # Write back updated data
+                    with open(other_file, "w", encoding="utf-8") as f:
+                        json.dump(other_data, f, indent=2)
+
+                    print(f"  [✓] Updated {other_file.name} with similarity reference")
+
+        except Exception as e:
+            print(f"  [-] Error comparing with {other_file.name}: {e}")
+            continue
+
+    # Update current file with similar binaries
+    if similar_found:
+        current_data["disassembly"]["similar_binaries"] = similar_found
+        with open(current_json_path, "w", encoding="utf-8") as f:
+            json.dump(current_data, f, indent=2)
+
+        print(f"[+] Found {len(similar_found)} similar binaries (>{threshold:.0%} similarity)")
+    else:
+        print(f"[*] No similar binaries found above {threshold:.0%} threshold")
+
+    return similar_found
+
+
+def process_disassembly(binary_path: str, results_dir: str = "results"):
+    """
+    Extract disassembly data from binary and return it as a dictionary.
+    Does not modify files directly - returns data for multiprocessing pipeline.
+
+    Args:
+        binary_path: Path to the binary file
+        results_dir: Directory containing all result JSONs (for similarity comparison)
+
+    Returns:
+        Dictionary with disassembly data, or None on failure
+    """
+    binary_path = Path(binary_path)
+    results_dir = Path(results_dir)
+
+    # Verify binary exists
+    if not binary_path.exists():
+        print(f"[-] Binary not found: {binary_path}")
+        return None
+
+    # Extract function hashes
+    print(f"[+] Extracting disassembly data...")
+    disassembly_data = extract_function_hashes(str(binary_path))
+
+    if disassembly_data is None:
+        print(f"[-] Failed to extract disassembly data")
+        return None
+
+    print(f"[+] Disassembly extraction complete")
+    return disassembly_data
 
 
 if __name__ == "__main__":
-    binary = r""
-    print("Extracting functions from:", binary)
-    out = extract_function_hashes(binary)
-    print("Wrote:", out)
+    # Example usage
+    if len(sys.argv) > 1:
+        binary_path = sys.argv[1]
+        results_dir = sys.argv[2] if len(sys.argv) > 2 else "results"
+    else:
+        # Default test
+        binary_path = r"C:\Users\lcbba\OneDrive\Desktop\labs\labs\Activity 4\crackme\crackme\crackme0x02.exe"
+        results_dir = r"C:\Users\lcbba\OneDrive\Desktop\INFLEX\results"
 
-    file1 = ""
-    file2 = ""
-    result = compare_binaries(file1, file2, "")
+    print("=" * 60)
+    print("Binary Disassembly Analysis")
+    print("=" * 60)
 
+    result = process_disassembly(binary_path, results_dir)
+
+    if result:
+        print("\n" + "=" * 60)
+        print("Processing Complete!")
+        print("=" * 60)
+        print(f"Functions extracted: {result['function_count']}")
+        print(f"\nDisassembly data:")
+        print(json.dumps(result, indent=2))
+    else:
+        print("[-] Failed to process disassembly")
