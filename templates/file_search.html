@@ -1,4 +1,5 @@
-<!--TODO: Make the whole thing dynamic with the searching features and loading in the files reports page, and not in general we prob need to clean up the reports to just one file per sample-->
+<!--TODO: Make the whole thing dynamic with the searching features and loading in the files reports page, and not in
+          general we prob need to clean up the reports to just one file per sample-->
 
 <!DOCTYPE html>
 <html lang="en">
@@ -18,6 +19,8 @@
       <a href="/">Dashboard</a>
       <a href="/uploads">Uploads</a>
       <a href="/search">Reports</a>
+      <a href="/graph">Graphs</a>
+      <a href="/settings">Settings</a>
     </nav>
   </header>
 
@@ -27,9 +30,174 @@
       id="searchBox"
       type="text"
       class="search-bar"
-      placeholder="Search by hash, DLL, MITRE ID, or keyword..."
+      placeholder="Search by hash, filename, DLL, or keyword..."
     >
     <button id="searchBtn" class="btn-primary ml-3">Search</button>
+    <button id="advancedSearchBtn" class="btn-secondary ml-3">Advanced Search</button>
+  </div>
+
+  <!-- Advanced Search Modal -->
+  <div id="advancedSearchModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+      <div class="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center rounded-t-2xl">
+        <h2 class="text-2xl font-bold text-[#8E793E]">Advanced Search</h2>
+        <button id="closeModal" class="text-gray-500 hover:text-gray-700 text-2xl">&times;</button>
+      </div>
+
+      <div class="p-6 space-y-6">
+        <!-- Hash Search Section -->
+        <div class="bg-gray-50 rounded-lg p-4">
+          <h3 class="font-bold text-lg mb-3 text-[#231F20]">Hash Search</h3>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">MD5</label>
+              <input type="text" id="advMD5" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Enter MD5 hash">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">SHA1</label>
+              <input type="text" id="advSHA1" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Enter SHA1 hash">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">SHA256</label>
+              <input type="text" id="advSHA256" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Enter SHA256 hash">
+            </div>
+          </div>
+        </div>
+
+        <!-- PE Header Information -->
+        <div class="bg-gray-50 rounded-lg p-4">
+          <h3 class="font-bold text-lg mb-3 text-[#231F20]">PE Header</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Machine Type</label>
+              <select id="advMachine" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                <option value="">Any</option>
+                <option value="IMAGE_FILE_MACHINE_I386">I386 (32-bit)</option>
+                <option value="IMAGE_FILE_MACHINE_AMD64">AMD64 (64-bit)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Subsystem</label>
+              <select id="advSubsystem" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                <option value="">Any</option>
+                <option value="IMAGE_SUBSYSTEM_WINDOWS_GUI">Windows GUI</option>
+                <option value="IMAGE_SUBSYSTEM_WINDOWS_CUI">Windows Console</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Number of Sections</label>
+              <div class="flex gap-2">
+                <input type="number" id="advSectionsMin" class="w-1/2 border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Min">
+                <input type="number" id="advSectionsMax" class="w-1/2 border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Max">
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Compilation Date</label>
+              <input type="date" id="advCompileDate" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+            </div>
+          </div>
+        </div>
+
+        <!-- Section Search -->
+        <div class="bg-gray-50 rounded-lg p-4">
+          <h3 class="font-bold text-lg mb-3 text-[#231F20]">Section Analysis</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Section Name Contains</label>
+              <input type="text" id="advSectionName" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="e.g., .text, .data">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Section Entropy Range</label>
+              <div class="flex gap-2 items-center">
+                <input type="number" id="advEntropyMin" step="0.1" min="0" max="8" class="w-1/2 border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Min">
+                <input type="number" id="advEntropyMax" step="0.1" min="0" max="8" class="w-1/2 border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Max">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Import Search -->
+        <div class="bg-gray-50 rounded-lg p-4">
+          <h3 class="font-bold text-lg mb-3 text-[#231F20]">Import Analysis</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">DLL Name</label>
+              <input type="text" id="advDLLName" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="e.g., KERNEL32.dll">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Function Name</label>
+              <input type="text" id="advFunctionName" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="e.g., CreateFileW">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Import Hash (ImpHash)</label>
+              <input type="text" id="advImpHash" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Enter imphash">
+            </div>
+          </div>
+        </div>
+
+        <!-- String Search -->
+        <div class="bg-gray-50 rounded-lg p-4">
+          <h3 class="font-bold text-lg mb-3 text-[#231F20]">String Search</h3>
+          <div class="space-y-3">
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Contains String</label>
+              <input type="text" id="advStringSearch" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Search in extracted strings">
+            </div>
+            <div class="flex gap-4">
+              <label class="flex items-center space-x-2 cursor-pointer">
+                <input type="checkbox" id="advStringASCII" class="w-4 h-4" checked>
+                <span class="text-sm">Search ASCII</span>
+              </label>
+              <label class="flex items-center space-x-2 cursor-pointer">
+                <input type="checkbox" id="advStringUnicode" class="w-4 h-4" checked>
+                <span class="text-sm">Search Unicode</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Security Features (copied from sidebar) -->
+        <div class="bg-gray-50 rounded-lg p-4">
+          <h3 class="font-bold text-lg mb-3 text-[#231F20]">Security Features</h3>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <label class="flex items-center space-x-2 cursor-pointer">
+              <input type="checkbox" class="adv-security w-4 h-4" value="ASLR">
+              <span class="text-sm">ASLR</span>
+            </label>
+            <label class="flex items-center space-x-2 cursor-pointer">
+              <input type="checkbox" class="adv-security w-4 h-4" value="DEP">
+              <span class="text-sm">DEP</span>
+            </label>
+            <label class="flex items-center space-x-2 cursor-pointer">
+              <input type="checkbox" class="adv-security w-4 h-4" value="SEH">
+              <span class="text-sm">SEH</span>
+            </label>
+            <label class="flex items-center space-x-2 cursor-pointer">
+              <input type="checkbox" class="adv-security w-4 h-4" value="CFG">
+              <span class="text-sm">CFG</span>
+            </label>
+            <label class="flex items-center space-x-2 cursor-pointer">
+              <input type="checkbox" class="adv-security w-4 h-4" value="SafeSEH">
+              <span class="text-sm">SafeSEH</span>
+            </label>
+            <label class="flex items-center space-x-2 cursor-pointer">
+              <input type="checkbox" class="adv-security w-4 h-4" value="Signed">
+              <span class="text-sm">Signed</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex justify-end gap-3 pt-4 border-t">
+          <button id="advResetBtn" class="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+            Reset
+          </button>
+          <button id="advSearchBtn" class="btn-primary px-6 py-2">
+            Search
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Main Content -->
@@ -39,32 +207,51 @@
     <aside class="bg-white rounded-2xl shadow-lg p-6 filter-section h-fit">
       <h3 class="text-xl mb-4">Filters</h3>
 
+      <!-- File Type Filter -->
+      <div class="mb-6">
+        <h4 class="font-semibold mb-3 text-gray-700">File Type</h4>
+        <div class="space-y-2">
+          <label class="flex items-center space-x-2 cursor-pointer">
+            <input type="checkbox" class="type-filter w-4 h-4" value="exe">
+            <span class="text-sm">Executable (.exe)</span>
+          </label>
+          <label class="flex items-center space-x-2 cursor-pointer">
+            <input type="checkbox" class="type-filter w-4 h-4" value="dll">
+            <span class="text-sm">DLL (.dll)</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- DLL Imports Filter -->
       <div class="mb-6">
         <h4 class="font-semibold mb-3 text-gray-700">DLL Imports</h4>
+        <div id="dllFilters" class="space-y-2">
+          <p class="text-xs text-gray-500">Loading...</p>
+        </div>
+      </div>
+
+      <!-- Security Features Filter -->
+      <div class="mb-6">
+        <h4 class="font-semibold mb-3 text-gray-700">Security Features</h4>
         <div class="space-y-2">
           <label class="flex items-center space-x-2 cursor-pointer">
-            <input type="checkbox" class="dll-filter w-4 h-4" value="KERNEL32.dll">
-            <span class="text-sm">KERNEL32.dll</span>
+            <input type="checkbox" class="security-filter w-4 h-4" value="ASLR">
+            <span class="text-sm">ASLR Enabled</span>
           </label>
           <label class="flex items-center space-x-2 cursor-pointer">
-            <input type="checkbox" class="dll-filter w-4 h-4" value="msvcrt.dll">
-            <span class="text-sm">msvcrt.dll</span>
+            <input type="checkbox" class="security-filter w-4 h-4" value="DEP">
+            <span class="text-sm">DEP Enabled</span>
+          </label>
+          <label class="flex items-center space-x-2 cursor-pointer">
+            <input type="checkbox" class="security-filter w-4 h-4" value="Signed">
+            <span class="text-sm">Digitally Signed</span>
           </label>
         </div>
       </div>
 
+      <!-- Entropy Range Filter -->
       <div class="mb-6">
-        <h4 class="font-semibold mb-3 text-gray-700">MITRE Techniques</h4>
-        <div class="space-y-2">
-          <label class="flex items-center space-x-2 cursor-pointer">
-            <input type="checkbox" class="mitre-filter w-4 h-4" value="T1574">
-            <span class="text-sm">T1574</span>
-          </label>
-        </div>
-      </div>
-
-      <div class="mb-6">
-        <h4 class="font-semibold mb-3 text-gray-700">Entropy Range</h4>
+        <h4 class="font-semibold mb-3 text-gray-700">Max Entropy</h4>
         <input
           id="entropyRange"
           type="range"
@@ -78,53 +265,109 @@
           Max: <span id="entropyValue" class="font-semibold text-[#AD974F]">8.0</span>
         </div>
       </div>
+
+      <!-- File Size Filter -->
+      <div class="mb-6">
+        <h4 class="font-semibold mb-3 text-gray-700">File Size (KB)</h4>
+        <div class="space-y-2">
+          <label class="flex items-center space-x-2">
+            <span class="text-xs text-gray-600 w-12">Min:</span>
+            <input type="number" id="minSize" class="border rounded px-2 py-1 w-24 text-sm" placeholder="0">
+          </label>
+          <label class="flex items-center space-x-2">
+            <span class="text-xs text-gray-600 w-12">Max:</span>
+            <input type="number" id="maxSize" class="border rounded px-2 py-1 w-24 text-sm" placeholder="∞">
+          </label>
+        </div>
+      </div>
+
+      <!-- Reset Filters Button -->
+      <button id="resetBtn" class="w-full btn-secondary py-2 text-sm">
+        Reset Filters
+      </button>
     </aside>
 
     <!-- Results Panel -->
     <main class="bg-white rounded-2xl shadow-lg p-6">
-      <h2 class="font-bold text-xl mb-4 text-[#8E793E]">Search Results</h2>
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="font-bold text-xl text-[#8E793E]">Search Results</h2>
+        <span id="resultCount" class="text-sm text-gray-600">0 results</span>
+      </div>
       <div id="resultsContainer"></div>
     </main>
   </div>
 
   <script>
-    let combinedData = [];
+    let allData = [];
+    let uniqueDLLs = new Set();
 
     async function loadData() {
       try {
-        const indexRes = await fetch("../results/index.json");
-        const indexList = await indexRes.json();
+        // Load index file that lists all JSON files
+        const indexRes = await fetch("/api/results");
+        const files = await indexRes.json();
 
-        const files = await Promise.all(
-          indexList.map(f => fetch(`results/${f}`).then(r => r.json()))
-        );
+        allData = files.map(file => {
+          // Extract DLLs for filter options
+          const imports = file.static_analysis?.imports || [];
+          imports.forEach(imp => uniqueDLLs.add(imp.dll));
 
-        combinedData = files.map(file => {
-          const mitreFile = file.mapping ? file : null;
-          const extractedFile = file.hashes ? file : null;
-
-          if (mitreFile && extractedFile) {
-            return { ...extractedFile, mitre: Object.values(mitreFile.mapping || {}) };
-          }
           return file;
         });
 
-        renderResults(combinedData);
+        // Populate DLL filters dynamically
+        populateDLLFilters();
+        renderResults(allData);
       } catch (err) {
         console.error("Error loading results:", err);
         const container = document.getElementById("resultsContainer");
         container.innerHTML = `
           <div class="text-center py-8">
-            <p class="text-red-600 font-semibold">Failed to load data from results/ directory.</p>
-            <p class="text-gray-500 text-sm mt-2">Please ensure the results directory exists and contains valid JSON files.</p>
+            <p class="text-red-600 font-semibold">Failed to load data</p>
+            <p class="text-gray-500 text-sm mt-2">Please ensure the API is accessible.</p>
           </div>
         `;
       }
     }
 
+    function populateDLLFilters() {
+      const dllContainer = document.getElementById("dllFilters");
+      const sortedDLLs = Array.from(uniqueDLLs).sort();
+
+      if (sortedDLLs.length === 0) {
+        dllContainer.innerHTML = '<p class="text-xs text-gray-500">No DLLs found</p>';
+        return;
+      }
+
+      // Show top 10 most common DLLs
+      const commonDLLs = ['KERNEL32.dll', 'ADVAPI32.dll', 'USER32.dll', 'NTDLL.dll', 'msvcrt.dll'];
+      const displayDLLs = sortedDLLs.filter(dll => commonDLLs.includes(dll));
+
+      dllContainer.innerHTML = displayDLLs.map(dll => `
+        <label class="flex items-center space-x-2 cursor-pointer">
+          <input type="checkbox" class="dll-filter w-4 h-4" value="${dll}">
+          <span class="text-sm">${dll}</span>
+        </label>
+      `).join('');
+
+      // Add event listeners
+      document.querySelectorAll(".dll-filter").forEach(cb =>
+        cb.addEventListener("change", applyFilters)
+      );
+    }
+
+    function getMaxEntropy(item) {
+      const sections = item.static_analysis?.sections || [];
+      return sections.length > 0
+        ? Math.max(...sections.map(s => s.Entropy || 0))
+        : 0;
+    }
+
     function renderResults(data) {
       const container = document.getElementById("resultsContainer");
+      const resultCount = document.getElementById("resultCount");
       container.innerHTML = "";
+      resultCount.textContent = `${data.length} result${data.length !== 1 ? 's' : ''}`;
 
       if (!data.length) {
         container.innerHTML = `
@@ -137,29 +380,59 @@
       }
 
       data.forEach(item => {
-        const vt = item.virustotal?.status || {};
-        const imports = item.pe_info?.imports?.map(i => i.dll).join(", ") || "N/A";
-        const mitreTags = (item.mitre || [])
-          .map(m => `<span class="result-tag">${m.technique_id}</span>`)
-          .join(" ");
+        const ingest = item.ingest_analysis || {};
+        const staticAnalysis = item.static_analysis || {};
+        const hashes = staticAnalysis.hashes || {};
+        const basicInfo = staticAnalysis.basic_info || {};
+        const security = staticAnalysis.security_features || {};
+        const imports = staticAnalysis.imports || [];
+
+        const maxEntropy = getMaxEntropy(item);
+        const dllList = imports.map(i => i.dll).slice(0, 3).join(", ");
+        const moreCount = imports.length > 3 ? ` +${imports.length - 3} more` : '';
 
         const div = document.createElement("div");
-        div.className = "result-card";
+        div.className = "result-card cursor-pointer";
+        div.onclick = () => window.location.href = `/report?hash=${hashes.sha256}`;
+
         div.innerHTML = `
-          <div class="font-bold text-lg mb-2 text-[#231F20]">
-            ${item.hashes?.sha256 || "Unknown File"}
+          <div class="flex justify-between items-start mb-2">
+            <div class="flex-1">
+              <div class="font-bold text-lg text-[#231F20] mb-1">
+                ${ingest.filename || basicInfo.filename || "Unknown File"}
+              </div>
+              <div class="text-xs text-gray-500 font-mono mb-2">
+                ${hashes.sha256 || "No hash available"}
+              </div>
+            </div>
+            <div class="flex gap-2">
+              ${basicInfo.is_exe ? '<span class="result-tag">EXE</span>' : ''}
+              ${basicInfo.is_dll ? '<span class="result-tag">DLL</span>' : ''}
+            </div>
           </div>
-          <div class="text-sm text-gray-700 mb-1">
-            <span class="font-semibold">MD5:</span> ${item.hashes?.md5 || "N/A"}
+
+          <div class="grid grid-cols-2 gap-4 text-sm mb-2">
+            <div>
+              <span class="font-semibold text-gray-700">Size:</span>
+              <span class="text-gray-600">${(ingest.size_bytes / 1024).toFixed(1)} KB</span>
+            </div>
+            <div>
+              <span class="font-semibold text-gray-700">Max Entropy:</span>
+              <span class="text-gray-600">${maxEntropy.toFixed(2)}</span>
+            </div>
           </div>
-          <div class="text-sm text-gray-700 mb-1">
-            <span class="font-semibold">Imports:</span> ${imports}
+
+          <div class="text-sm mb-2">
+            <span class="font-semibold text-gray-700">Imports:</span>
+            <span class="text-gray-600">${dllList || "None"}${moreCount}</span>
           </div>
-          <div class="text-sm text-gray-700 mb-2">
-            <span class="font-semibold">VT Detections:</span>
-            <span class="font-bold text-[#AD974F]">${vt.malicious || 0}</span>
+
+          <div class="flex gap-2 flex-wrap">
+            ${security.ASLR ? '<span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded">ASLR</span>' : ''}
+            ${security.DEP ? '<span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded">DEP</span>' : ''}
+            ${security.Signed ? '<span class="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded">Signed</span>' : ''}
+            ${security.CFG ? '<span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded">CFG</span>' : ''}
           </div>
-          ${mitreTags ? `<div class="mt-2">${mitreTags}</div>` : ''}
         `;
         container.appendChild(div);
       });
@@ -168,34 +441,67 @@
     function applyFilters() {
       const query = document.getElementById("searchBox").value.toLowerCase();
       const entropyLimit = parseFloat(document.getElementById("entropyRange").value);
+      const minSize = parseFloat(document.getElementById("minSize").value) || 0;
+      const maxSize = parseFloat(document.getElementById("maxSize").value) || Infinity;
+
+      const typeChecked = Array.from(document.querySelectorAll(".type-filter:checked"))
+        .map(cb => cb.value);
       const dllChecked = Array.from(document.querySelectorAll(".dll-filter:checked"))
         .map(cb => cb.value);
-      const mitreChecked = Array.from(document.querySelectorAll(".mitre-filter:checked"))
+      const securityChecked = Array.from(document.querySelectorAll(".security-filter:checked"))
         .map(cb => cb.value);
 
-      const filtered = combinedData.filter(item => {
-        const text = JSON.stringify(item).toLowerCase();
+      const filtered = allData.filter(item => {
+        const ingest = item.ingest_analysis || {};
+        const staticAnalysis = item.static_analysis || {};
+        const hashes = staticAnalysis.hashes || {};
+        const basicInfo = staticAnalysis.basic_info || {};
+        const security = staticAnalysis.security_features || {};
+        const imports = staticAnalysis.imports || [];
 
-        // Text match
-        if (query && !text.includes(query)) return false;
+        // Text search
+        if (query) {
+          const searchText = [
+            ingest.filename,
+            basicInfo.filename,
+            hashes.md5,
+            hashes.sha1,
+            hashes.sha256,
+            ...imports.map(i => i.dll)
+          ].join(' ').toLowerCase();
 
-        // DLL filter
-        if (dllChecked.length &&
-            !item.pe_info?.imports?.some(i => dllChecked.includes(i.dll))) {
-          return false;
+          if (!searchText.includes(query)) return false;
         }
 
-        // MITRE filter
-        if (mitreChecked.length &&
-            !item.mitre?.some(m => mitreChecked.includes(m.technique_id))) {
-          return false;
+        // File type filter
+        if (typeChecked.length > 0) {
+          const hasType = typeChecked.some(type => {
+            if (type === 'exe') return basicInfo.is_exe;
+            if (type === 'dll') return basicInfo.is_dll;
+            return false;
+          });
+          if (!hasType) return false;
+        }
+
+        // DLL filter
+        if (dllChecked.length > 0) {
+          const hasDLL = imports.some(imp => dllChecked.includes(imp.dll));
+          if (!hasDLL) return false;
+        }
+
+        // Security features filter
+        if (securityChecked.length > 0) {
+          const hasAllFeatures = securityChecked.every(feature => security[feature]);
+          if (!hasAllFeatures) return false;
         }
 
         // Entropy filter
-        const maxEntropy = Math.max(
-          ...(item.pe_info?.sections?.map(s => s.entropy) || [0])
-        );
+        const maxEntropy = getMaxEntropy(item);
         if (maxEntropy > entropyLimit) return false;
+
+        // File size filter (in KB)
+        const sizeKB = ingest.size_bytes / 1024;
+        if (sizeKB < minSize || sizeKB > maxSize) return false;
 
         return true;
       });
@@ -203,20 +509,202 @@
       renderResults(filtered);
     }
 
+    function applyAdvancedSearch() {
+      // Get all advanced search values
+      const advMD5 = document.getElementById("advMD5").value.toLowerCase();
+      const advSHA1 = document.getElementById("advSHA1").value.toLowerCase();
+      const advSHA256 = document.getElementById("advSHA256").value.toLowerCase();
+      const advMachine = document.getElementById("advMachine").value;
+      const advSubsystem = document.getElementById("advSubsystem").value;
+      const advSectionsMin = parseInt(document.getElementById("advSectionsMin").value) || 0;
+      const advSectionsMax = parseInt(document.getElementById("advSectionsMax").value) || Infinity;
+      const advCompileDate = document.getElementById("advCompileDate").value;
+      const advSectionName = document.getElementById("advSectionName").value.toLowerCase();
+      const advEntropyMin = parseFloat(document.getElementById("advEntropyMin").value) || 0;
+      const advEntropyMax = parseFloat(document.getElementById("advEntropyMax").value) || 8;
+      const advDLLName = document.getElementById("advDLLName").value.toLowerCase();
+      const advFunctionName = document.getElementById("advFunctionName").value.toLowerCase();
+      const advImpHash = document.getElementById("advImpHash").value.toLowerCase();
+      const advStringSearch = document.getElementById("advStringSearch").value.toLowerCase();
+      const advStringASCII = document.getElementById("advStringASCII").checked;
+      const advStringUnicode = document.getElementById("advStringUnicode").checked;
+      const advSecurityChecked = Array.from(document.querySelectorAll(".adv-security:checked"))
+        .map(cb => cb.value);
+
+      const filtered = allData.filter(item => {
+        const ingest = item.ingest_analysis || {};
+        const staticAnalysis = item.static_analysis || {};
+        const hashes = staticAnalysis.hashes || {};
+        const fileHeader = staticAnalysis.file_header || {};
+        const optionalHeader = staticAnalysis.optional_header || {};
+        const sections = staticAnalysis.sections || [];
+        const imports = staticAnalysis.imports || [];
+        const strings = staticAnalysis.strings || {};
+        const security = staticAnalysis.security_features || {};
+
+        // Hash filters
+        if (advMD5 && hashes.md5?.toLowerCase() !== advMD5) return false;
+        if (advSHA1 && hashes.sha1?.toLowerCase() !== advSHA1) return false;
+        if (advSHA256 && hashes.sha256?.toLowerCase() !== advSHA256) return false;
+
+        // Machine type filter
+        if (advMachine && fileHeader.Machine?.decoded !== advMachine) return false;
+
+        // Subsystem filter
+        if (advSubsystem && optionalHeader.Subsystem?.decoded !== advSubsystem) return false;
+
+        // Sections count filter
+        const sectionCount = fileHeader.NumberOfSections || 0;
+        if (sectionCount < advSectionsMin || sectionCount > advSectionsMax) return false;
+
+        // Compilation date filter
+        if (advCompileDate) {
+          const compileTimestamp = fileHeader.TimeDateStamp?.readable;
+          if (compileTimestamp) {
+            const compileDate = new Date(compileTimestamp).toISOString().split('T')[0];
+            if (compileDate !== advCompileDate) return false;
+          } else {
+            return false;
+          }
+        }
+
+        // Section name filter
+        if (advSectionName) {
+          const hasSection = sections.some(s => s.Name?.toLowerCase().includes(advSectionName));
+          if (!hasSection) return false;
+        }
+
+        // Section entropy filter
+        if (advEntropyMin > 0 || advEntropyMax < 8) {
+          const hasEntropyInRange = sections.some(s => {
+            const entropy = s.Entropy || 0;
+            return entropy >= advEntropyMin && entropy <= advEntropyMax;
+          });
+          if (!hasEntropyInRange) return false;
+        }
+
+        // DLL name filter
+        if (advDLLName) {
+          const hasDLL = imports.some(imp => imp.dll?.toLowerCase().includes(advDLLName));
+          if (!hasDLL) return false;
+        }
+
+        // Function name filter
+        if (advFunctionName) {
+          const hasFunction = imports.some(imp =>
+            imp.functions?.some(fn => fn.name?.toLowerCase().includes(advFunctionName))
+          );
+          if (!hasFunction) return false;
+        }
+
+        // ImpHash filter
+        if (advImpHash && hashes.imphash?.toLowerCase() !== advImpHash) return false;
+
+        // String search filter
+        if (advStringSearch) {
+          let found = false;
+          if (advStringASCII && strings.ascii) {
+            found = strings.ascii.some(s => s.toLowerCase().includes(advStringSearch));
+          }
+          if (!found && advStringUnicode && strings.unicode) {
+            found = strings.unicode.some(s => s.toLowerCase().includes(advStringSearch));
+          }
+          if (!found) return false;
+        }
+
+        // Security features filter
+        if (advSecurityChecked.length > 0) {
+          const hasAllFeatures = advSecurityChecked.every(feature => security[feature]);
+          if (!hasAllFeatures) return false;
+        }
+
+        return true;
+      });
+
+      renderResults(filtered);
+      closeAdvancedSearchModal();
+    }
+
+    function resetAdvancedSearch() {
+      document.getElementById("advMD5").value = '';
+      document.getElementById("advSHA1").value = '';
+      document.getElementById("advSHA256").value = '';
+      document.getElementById("advMachine").value = '';
+      document.getElementById("advSubsystem").value = '';
+      document.getElementById("advSectionsMin").value = '';
+      document.getElementById("advSectionsMax").value = '';
+      document.getElementById("advCompileDate").value = '';
+      document.getElementById("advSectionName").value = '';
+      document.getElementById("advEntropyMin").value = '';
+      document.getElementById("advEntropyMax").value = '';
+      document.getElementById("advDLLName").value = '';
+      document.getElementById("advFunctionName").value = '';
+      document.getElementById("advImpHash").value = '';
+      document.getElementById("advStringSearch").value = '';
+      document.getElementById("advStringASCII").checked = true;
+      document.getElementById("advStringUnicode").checked = true;
+      document.querySelectorAll(".adv-security").forEach(cb => cb.checked = false);
+    }
+
+    function openAdvancedSearchModal() {
+      document.getElementById("advancedSearchModal").classList.remove("hidden");
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeAdvancedSearchModal() {
+      document.getElementById("advancedSearchModal").classList.add("hidden");
+      document.body.style.overflow = 'auto';
+    }
+
+    function resetFilters() {
+      document.getElementById("searchBox").value = '';
+      document.getElementById("entropyRange").value = 8;
+      document.getElementById("entropyValue").textContent = '8.0';
+      document.getElementById("minSize").value = '';
+      document.getElementById("maxSize").value = '';
+
+      document.querySelectorAll(".type-filter, .dll-filter, .security-filter")
+        .forEach(cb => cb.checked = false);
+
+      renderResults(allData);
+    }
+
     // Event listeners
     document.getElementById("searchBtn").addEventListener("click", applyFilters);
+    document.getElementById("resetBtn").addEventListener("click", resetFilters);
+    document.getElementById("advancedSearchBtn").addEventListener("click", openAdvancedSearchModal);
+    document.getElementById("closeModal").addEventListener("click", closeAdvancedSearchModal);
+    document.getElementById("advSearchBtn").addEventListener("click", applyAdvancedSearch);
+    document.getElementById("advResetBtn").addEventListener("click", resetAdvancedSearch);
+
+    // Close modal on outside click
+    document.getElementById("advancedSearchModal").addEventListener("click", (e) => {
+      if (e.target.id === "advancedSearchModal") {
+        closeAdvancedSearchModal();
+      }
+    });
+
+    // Close modal on Escape key
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !document.getElementById("advancedSearchModal").classList.contains("hidden")) {
+        closeAdvancedSearchModal();
+      }
+    });
 
     document.getElementById("entropyRange").addEventListener("input", e => {
       document.getElementById("entropyValue").textContent = e.target.value;
       applyFilters();
     });
 
-    document.querySelectorAll(".dll-filter, .mitre-filter")
+    document.querySelectorAll(".type-filter, .security-filter")
       .forEach(cb => cb.addEventListener("change", applyFilters));
 
     document.getElementById("searchBox").addEventListener("keypress", e => {
       if (e.key === "Enter") applyFilters();
     });
+
+    document.getElementById("minSize").addEventListener("input", applyFilters);
+    document.getElementById("maxSize").addEventListener("input", applyFilters);
 
     // Load data on page load
     loadData();
