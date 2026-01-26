@@ -1,5 +1,3 @@
-<!--TODO: Add in checkbox for CAPEv2 sandbox option-->
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -18,6 +16,8 @@
       <a href="/">Dashboard</a>
       <a href="/uploads">Uploads</a>
       <a href="/search">Reports</a>
+      <a href="/graph">Graphs</a>
+      <a href="/settings">Settings</a>
     </nav>
   </header>
 
@@ -51,6 +51,10 @@
 
       <!-- Submit Button -->
       <div class="mt-6 text-right">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" id="capeCheckbox" class="w-4 h-4 cursor-pointer">
+          <span class="text-sm text-gray-700">Optional CAPEv2 analysis</span>
+        </label>
         <button id="submitBtn" class="btn-secondary px-6 py-2">
           Submit for Analysis
         </button>
@@ -66,7 +70,7 @@
     </div>
   </div>
 
-  <script>
+ <script>
     const uploadBox = document.getElementById("uploadBox");
     const fileInput = document.getElementById("fileInput");
     const browseBtn = document.getElementById("browseBtn");
@@ -130,11 +134,15 @@
         return;
       }
 
+      // Get CAPEv2 checkbox state
+      const capeEnabled = document.getElementById("capeCheckbox").checked;
+
       document.getElementById("loadingOverlay").classList.remove("hidden");
 
       const uploads = files.map(file => {
         const formData = new FormData();
         formData.append("file", file);
+        formData.append("cape_analysis", capeEnabled);
         return fetch("/api/upload", { method: "POST", body: formData })
           .then(res => res.json())
           .then(data => console.log("Uploaded:", data))
