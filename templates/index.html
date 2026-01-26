@@ -14,13 +14,15 @@
 
   <!-- Navbar -->
   <header class="navbar">
-  <div class="logo">INFLEX</div>
-  <nav class="menu">
-    <a href="/">Dashboard</a>
-    <a href="/uploads">Uploads</a>
-    <a href="/search">Reports</a>
-  </nav>
-</header>
+    <div class="logo">INFLEX</div>
+    <nav class="menu">
+      <a href="/">Dashboard</a>
+      <a href="/uploads">Uploads</a>
+      <a href="/search">Reports</a>
+      <a href="/graph">Graphs</a>
+      <a href="/settings">Settings</a>
+    </nav>
+  </header>
 
   <!-- Main Content -->
   <div class="max-w-6xl mx-auto">
@@ -51,38 +53,100 @@
         const res = await fetch("/api/results");
         const items = await res.json();
 
-        const categoryCounts = { "Suspected": 0, "Clean": 0, "Errors": 0 };
+        const categoryCounts = { "Suspected": 0, "Clean": 0, "Error": 0 };
+        // Errors will come from checking if all the required fields are present or not
         const fileList = document.getElementById("fileList");
         fileList.innerHTML = "";
 
+        const REQUIRED_TOP_LEVEL_KEYS = [
+          "ingest_analysis",
+          "static_analysis",
+          "analysis_timestamps"
+        ];
+
         items.forEach(it => {
           const extracted = it.extracted || it;
-          const vt = extracted.virustotal || {};
-          const malicious = vt.malicious || 0;
-          const severity = malicious > 0 ? "Suspected" : "Clean";
+
+          // -------------------------------
+          // Top-level schema validation
+          // -------------------------------
+          const missingKeys = REQUIRED_TOP_LEVEL_KEYS.filter(
+            key => !(key in extracted)
+          );
+
+          const hasSchemaError = missingKeys.length > 0;
+
+          // -------------------------------
+          // Hash + VT logic (only if valid)
+          // -------------------------------
+          // const sha = extracted.ingest_analysis?.sha256;
+          const sha = "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"; // test VT hash
+          const vt = extracted.threat_intel?.VirusTotal || {};
+
+          let severity;
+
+          if (hasSchemaError) {
+            severity = "Error";
+          } else {
+            const malicious =
+              sha && vt[sha]?.analysis_stats?.malicious
+                ? vt[sha].analysis_stats.malicious
+                : 0;
+
+            console.log("Malicious count for", sha, "is", malicious);
+            severity = malicious > 0 ? "Suspected" : "Clean";
+          }
+
+          // -------------------------------
+          // Category counting
+          // -------------------------------
           categoryCounts[severity] = (categoryCounts[severity] || 0) + 1;
 
+          // -------------------------------
+          // UI rendering
+          // -------------------------------
           const li = document.createElement("li");
-          li.className = "py-3 px-2 flex justify-between items-center hover:bg-gray-50";
+          li.className =
+            "py-3 px-2 flex justify-between items-center hover:bg-gray-50";
 
           const left = document.createElement("div");
           left.innerHTML = `
-            <div class="font-semibold text-[#231F20]">${extracted.filename || "unknown"}</div>
-            <div class="text-sm text-gray-600">${it.hashes?.sha256 || "no hash"}</div>
+            <div class="font-semibold text-[#231F20]">
+              ${extracted.ingest_analysis?.original_path || "unknown"}
+            </div>
+            <div class="text-sm ${
+              severity === "Error" ? "text-red-600" : "text-gray-600"
+            }">
+              ${
+                severity === "Error"
+                  ? `Schema error – missing: ${missingKeys.join(", ")}`
+                  : extracted.ingest_analysis?.sha256 || "no hash"
+              }
+            </div>
           `;
 
           const right = document.createElement("div");
-          right.innerHTML = `
-            <a href="/report?hash=${it.hashes?.sha256}"
-               class="px-4 py-2 rounded bg-[#AD974F] text-white hover:bg-[#8E793E] transition-colors inline-block">
-              View Report
-            </a>
-          `;
+
+          if (severity !== "Error") {
+            right.innerHTML = `
+              <a href="/report?hash=${extracted.ingest_analysis?.sha256}"
+                class="px-4 py-2 rounded bg-[#AD974F] text-white hover:bg-[#8E793E] transition-colors inline-block">
+                View Report
+              </a>
+            `;
+          } else {
+            right.innerHTML = `
+              <span class="px-4 py-2 rounded bg-red-100 text-red-700 text-sm">
+                Invalid Sample
+              </span>
+            `;
+          }
 
           li.appendChild(left);
           li.appendChild(right);
           fileList.appendChild(li);
         });
+
 
         // Build charts
         const pieLabels = Object.keys(categoryCounts);
