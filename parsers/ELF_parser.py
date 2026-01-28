@@ -46,7 +46,14 @@ def json_safe(obj):
     if isinstance(obj, (list, tuple)):
         return [json_safe(v) for v in obj]
 
-    # pyelftools enums / containers / fallback
+    # Handle pyelftools Container objects by converting to dict
+    if hasattr(obj, 'items'):
+        try:
+            return {str(k): json_safe(v) for k, v in obj.items()}
+        except Exception:
+            pass
+    
+    # pyelftools enums / fallback
     return str(obj)
 
 
@@ -229,6 +236,22 @@ def extract_elf(path):
             "dwarf": dwarf_info(elf),
             "security": security_features(elf),
         }
+
+def run(src_path):
+    binary = src_path
+    output = sys.argv[2] if len(sys.argv) == 3 else None
+
+    data = extract_elf(binary)
+    safe_data = json_safe(data)
+    json_output = json.dumps(safe_data, indent=2)
+
+    if output:
+        with open(output, "w") as f:
+            f.write(json_output)
+    else:
+        print(json_output)
+
+    return safe_data
 
 
 def main():
