@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from parsers.PE_parser import PEStaticAnalyzer
-from parsers.ELF_parser import ELFStaticAnalyzer
+from parsers.ELF_parser import run
 from parsers.OLE_parser import OLEStaticAnalyzer
 from static_analysis.disassembly import process_disassembly
 from threat_intelligence.threat_intel import enrich_threat_data
@@ -244,6 +244,8 @@ def process_file(src_path, claimed_type, detected_type):
     # Normalize types
     claimed_type = claimed_type or "Unknown"
     detected_type = detected_type or "Unknown"
+    analyzer = None
+    report = None
 
     # Trust detected_type (magic bytes) more when available
     final_type = detected_type if detected_type != "Unknown" else claimed_type
@@ -257,16 +259,17 @@ def process_file(src_path, claimed_type, detected_type):
     if final_type == "Portable Executable (EXE)":
         analyzer = PEStaticAnalyzer(src_path)
     elif final_type == "ELF Executable":
-        analyzer = ELFStaticAnalyzer(src_path)
+        report = run(src_path)
     elif final_type == "OLE Compound Document (VBA Macro Capable)" or any(vba_type in final_type for vba_type in ["Microsoft Office", "Microsoft Excel", "Microsoft PowerPoint"]):
         analyzer = OLEStaticAnalyzer(src_path)
     else:
         print(f"[x] Unsupported file type: {final_type}")
         return None
     
-    analyzer.analyze()
-    # Return the analysis data instead of saving to file
-    report = analyzer.get_report() if hasattr(analyzer, 'get_report') else None
+    if analyzer is not None:
+        analyzer.analyze()
+        report = analyzer.get_report() if hasattr(analyzer, 'get_report') else None
+    
     return report
 
     # TODO: Run regular expressions here, already have this in PE but need to make it general
