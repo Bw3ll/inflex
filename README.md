@@ -3,6 +3,49 @@
 ## Overview
 INFLEX is a heterogenous malware analysis framework designed to parse, analyze, and correlate diverse file formats including PE, ELF, shellcode, and OLE documents. The system combines static analysis, optional dynamic sandboxing, and multiple emulation engines to extract comprehensive behavioral and structural features from malicious samples. INFLEX automatically computes cross-domain correlations to identify malware families, shared infrastructure, and novel indicators while supporting user defined correlation through an intuitive search interface. All analysis results are stored in a queryable Elasticsearch database, enabling rapid threat intelligence enrichment and scalable sample processing. 
 
+## INFLEX DEMO DESCRIPTION
+
+### Analysis Dashboard 
+INFLEX supplies analysits with a concise dashboard to quickly search through sample reports and know which samples warrant analysis manual inspection. 
+
+### Heterogenous File Upload
+INFLEX supports PE, ELF, OLE, and Shellcode analysis and report generation enabling a one stop shop for malware analysis. 
+
+### Optional Dynamic Analysis
+To enhace the static and emulation analysis INFLEX supports public CAPEv2 sandbox analysis and local sandbox configureations.
+
+### Heterogenous File Reports 
+INFLEX processes PE, ELF, OLE, and Shellcode samples and normalizes the output into common features when possible while maintaing the detailed structure of each type to enhance heterogenous correlations. 
+
+### Integrated Threat Intelligence 
+To enrich the analysis threat sources like VirusTotal, AbuseCH, AbuseIPDB, Targeted Google Searches, MITRE STIX database, CAPA rules, YARA rules, and more are combined to flag new malware and identify threat vectors. 
+
+### Full Function Disassembly and Hashing
+To ebable the possibly of identifying code reuse and improve file simularity each sample's dissassembly is normalized and hashed by function with the target of finding code structures that are shared between files at a deeper level than done before. 
+
+### Static, Dynamic, and Emulation Analysis
+INFLEX aims to extract and enrich the maximum data out of uploaded samples by perfomrming deep static analysis, sample emulation, and dynamic analysis to provide analysit with feature and function descriptions. 
+
+### User Defined Correlations
+Assisting the triage process INFLEX leverages ElasticSearch to fule a user defined corelation engine to discover simular samples and cross sample analysis. 
+
+### Automatic Report Updates
+Once INFLEX is done anlyizing the uploaded samples automatic sample comparisons and reports are generated and displayed to the dashboard. 
+
+## Upcoming Features
+
+### AI Summerization
+INFLEX will use LLM summerization to give detailed analysis and reports to expidiate reporting of malicous samples. 
+
+### Automated Correlations 
+Ontop of the user defined correlations INFLEX will support automated correlations ran off of the features extracted for rapid deep file comparisions. 
+
+### Heterogenous Capaign Tracking
+Utlizing the normalized extracted features and threat intelligence INFLEX will be able to identifiy samples that are simular across file types.
+
+### PE, ELF, OLE, and Shellcode support 
+INFLEX will support the full analysis of PE, ELF, OLE, and Shellcode giving analysists a one stop shop for malware analysis. 
+
 ## How INFLEX Works
 INFLEX operates as a modular pipeline where each analysis stage functions independently: 
 
