@@ -157,7 +157,7 @@ INFLEX uses Elasticsearch for fast search and analyst-driven correlation queries
 # Analysis Workflow
 
 <p align="center">
-  <img src="Resources/INFLEX_workflow.png" width="600">
+  <img src="Resources/INFLEX_workflow.png" width="1000">
 </p>
 
 ---
