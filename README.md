@@ -1,194 +1,277 @@
+project image here - the one you shared with me on slack
+
 # INFLEX
 
 ## Overview
-INFLEX is a heterogenous malware analysis framework designed to parse, analyze, and correlate diverse file formats including PE, ELF, shellcode, and OLE documents. The system combines static analysis, optional dynamic sandboxing, and multiple emulation engines to extract comprehensive behavioral and structural features from malicious samples. INFLEX automatically computes cross-domain correlations to identify malware families, shared infrastructure, and novel indicators while supporting user defined correlation through an intuitive search interface. All analysis results are stored in a queryable Elasticsearch database, enabling rapid threat intelligence enrichment and scalable sample processing. 
+INFLEX is a **heterogenous malware analysis framework** designed to analyze and relate malicious artifacts across multiple file formats. The system combines static analysis, emulation, optional dynamic sandboxing, and threat intelligence enrichment to extract behavioral and structural features from malware samples.
 
-## INFLEX DEMO DESCRIPTION
+Unlike traditional tools that focus on a single file format or analysis technique, INFLEX normalizes analysis outputs across formats such as PE, ELF, shellcode, and OLE documents, enabling cross-domain correlation of malware families, shared infrastructure, novel indicators, and behavioral patterns.
 
-### Analysis Dashboard 
-INFLEX supplies analysits with a concise dashboard to quickly search through sample reports and know which samples warrant analysis manual inspection. 
+All results are stored in scalable Elasticsearch database and indexed for rapid search, enabling analysts to perform automated and user-driven correlation across large malware collections through an intuitive search interface to achieve rapid threat intelligence enrichment and scalable sample processing.
 
-### Heterogenous File Upload
-INFLEX supports PE, ELF, OLE, and Shellcode analysis and report generation enabling a one stop shop for malware analysis. 
+---
 
-### Optional Dynamic Analysis
-To enhace the static and emulation analysis INFLEX supports public CAPEv2 sandbox analysis and local sandbox configureations.
+# Key Capabilities
 
-### Heterogenous File Reports 
-INFLEX processes PE, ELF, OLE, and Shellcode samples and normalizes the output into common features when possible while maintaing the detailed structure of each type to enhance heterogenous correlations. 
+## 1. Multi-Format Malware Analysis
+INFLEX supports heterogeneous malware analysis across multiple artifact types:
 
-### Integrated Threat Intelligence 
-To enrich the analysis threat sources like VirusTotal, AbuseCH, AbuseIPDB, Targeted Google Searches, MITRE STIX database, CAPA rules, YARA rules, and more are combined to flag new malware and identify threat vectors. 
+- Windows PE executables  
+- Linux ELF binaries  
+- Shellcode  
+- OLE / malicious documents  
 
-### Full Function Disassembly and Hashing
-To ebable the possibly of identifying code reuse and improve file simularity each sample's dissassembly is normalized and hashed by function with the target of finding code structures that are shared between files at a deeper level than done before. 
+Each format is parsed using specialized tooling and normalized into a common analysis structure.
 
-### Static, Dynamic, and Emulation Analysis
-INFLEX aims to extract and enrich the maximum data out of uploaded samples by perfomrming deep static analysis, sample emulation, and dynamic analysis to provide analysit with feature and function descriptions. 
+## 2. Multi-Modal Analysis Pipeline
+INFLEX extracts features using multiple complementary analysis techniques:
 
-### User Defined Correlations
-Assisting the triage process INFLEX leverages ElasticSearch to fule a user defined corelation engine to discover simular samples and cross sample analysis. 
+- **Static analysis**
+- **Emulation**
+- **Optional dynamic sandbox execution**
 
-### Automatic Report Updates
-Once INFLEX is done anlyizing the uploaded samples automatic sample comparisons and reports are generated and displayed to the dashboard. 
+This allows INFLEX to recover structural, behavioral, and runtime features from malware samples.
 
-## Upcoming Features
+## 3. Deep Code-Level Similarity
+INFLEX performs **function-level disassembly and hashing** to identify shared code structures across samples.
 
-### AI Summerization
-INFLEX will use LLM summerization to give detailed analysis and reports to expidiate reporting of malicous samples. 
+This allows the system to detect:
 
-### Automated Correlations 
-Ontop of the user defined correlations INFLEX will support automated correlations ran off of the features extracted for rapid deep file comparisions. 
+- Code reuse across malware families
+- Variant generation
+- Shared developer toolchains
 
-### Heterogenous Capaign Tracking
-Utlizing the normalized extracted features and threat intelligence INFLEX will be able to identifiy samples that are simular across file types.
+## 4. Threat Intelligence Enrichment
+INFLEX enriches samples using external intelligence sources including:
 
-### PE, ELF, OLE, and Shellcode support 
-INFLEX will support the full analysis of PE, ELF, OLE, and Shellcode giving analysists a one stop shop for malware analysis. 
+- VirusTotal
+- AbuseCH
+- AbuseIPDB
+- MITRE ATT&CK mappings
+- YARA rules
+- OSINT enrichment
 
-## How INFLEX Works
-INFLEX operates as a modular pipeline where each analysis stage functions independently: 
+These integrations provide contextual intelligence to support malware triage and attribution.
 
-1. Ingestion and Preprocessing: 
+## 5. Automated and User-Defined Correlation
+INFLEX includes a **correlation engine** capable of linking samples based on:
 
-2. Parsing and Static Analysis: 
+- Structural similarity
+- Behavioral similarity
+- Code reuse
+- Shared infrastructure indicators
+- Threat intelligence overlaps
 
-3. Optional Dynamic Analysis: 
+Analysts can also perform **custom correlation queries** through the UI.
 
-4. Emulation:
-* BEAST: 
-* SHAREM: for more information on this tool vist (https://github.com/Bw3ll/sharem)
-* ViperMonkey: for more information on this tool vist (https://github.com/decalage2/ViperMonkey)
+---
 
-5. Normalization: 
+# System Architecture
 
-6. Threat Inteligence Enrichment: 
+INFLEX is implemented as a **modular Python-based pipeline** designed for scalability and parallel analysis.
 
-7. Correlation Engine: 
+Each uploaded sample passes through several independent analysis stages:
 
-8. Storage and Retrieval: 
+## 1. Ingestion and Preprocessing
+Samples are uploaded, hashed, and categorized by file type. Metadata and artifacts are stored for downstream analysis.
 
-## Novel Features
+## 2. Parsing
+File-type specific parsers extract format structures and metadata.
 
-* Heterogenous Correlation Across File Types: 
+Examples include:
 
-* Multi-Engine Emulation: 
+| File Type | Tools |
+|-----------|------|
+| PE | pefile, LIEF |
+| ELF | pyelftools, LIEF |
+| Shellcode | SHAREM |
+| OLE | oletools, oledump |
 
-* Automated MITRE ATT&CK Mapping from Multiple Sources: 
+Outputs are normalized into structured JSON.
 
-* Integrated User-Defined Correlation Interface: 
+## 3. Static Analysis
+Static analysis extracts structural and semantic features such as:
 
-## General Features
+- Strings and regex indicators
+- Import tables
+- Function disassembly
+- Entropy measurements
+- YARA rule matches
+- File metadata
+
+Imports and behaviors can be mapped to **MITRE ATT&CK techniques**.
+
+## 4. Emulation
+INFLEX integrates multiple emulation engines to extract runtime behaviors.
+
+- API tracing
+- code coverage
+- unpacking detection
+- behavioral extraction
+
+Engines:
+- BEAST
+- SHAREM (shellcode) https://github.com/Bw3ll/sharem
+- ViperMonkey (malicious macros) https://github.com/decalage2/ViperMonkey
+
+## 5. Optional Dynamic Analysis
+INFLEX optionally integrates sandbox analysis (CAPEv2 https://github.com/kevoreilly/CAPEv2) to capture runtime behaviors including:
+
+- process activity
+- network communications
+- file operations
+- registry changes
+
+## 6. Postprocessing and Enrichment
+Analysis results are aggregated and enriched with:
+
+- VirusTotal intelligence
+- reputation sources
+- fuzzy hashing (ssdeep)
+- function hash similarity
+- OSINT indicators
+
+## 7. Correlation Engine
+INFLEX performs automated similarity analysis across samples using multiple signals:
+
+- function hash similarity
+- behavioral similarity
+- structural similarity
+- IOC overlap
+
+This enables clustering of related malware families and campaign artifacts.
+
+## 8. Storage and Search
+INFLEX uses Elasticsearch for fast search and analyst-driven correlation queries, maximizing performance and scalability.
+
+---
+
+# Analysis Workflow
+
+picture of the workflow here. reference Slack for more info
+
+---
+
+# Novel Features
+
+- **Cross-Format Malware Correlation**: INFLEX enables correlation **across heterogeneous artifact types**, allowing analysts to identify campaigns spanning multiple delivery mechanisms.
+
+- **Multi-Engine Behavioral Extraction**: Combining **static analysis, emulation, and sandboxing** allows deeper extraction of malicious behaviors than single-mode tools.
+
+- **Function-Level Code Reuse Detection**: Normalized disassembly and function hashing allow identification of shared code structures across malware samples.
+
+- **Integrated Analyst Correlation Interface**: INFLEX allows analysts to construct custom correlation queries using extracted features and threat intelligence data.
+
+---
+
+# General Features
 
 * Multi-format ingestion supporting PE, ELF, shellcode, and OLE documents.
-
 * Static analysis with entropy computation, string extraction, and function hashing.
-
 * Disassembly and control flow analsyis via radare2.
-
 * Optional CAPEv2 sandbox integration for dynamic behavior capture.
-
 * YARA rule matching with support for custom rule uploads.
-
 * Threat intelligence enrichment from VirusTotal, AbuseCH, AbuseIPDB, and automated OSINT searches.
-
 * NoSQL storage in Elasticsearch with horizontal scaling support.
 
-* ...
+---
 
-## Features Extraction List
+# Feature Extraction Summary
+
+INFLEX extracts a wide range of features across analysis stages.
 
 ### Ingest Analysis
 
 * File size (bytes)
-
 * Ingest timestamp (UTC)
-
 * File format metadata (magic bytes, architecture, signatures)
-
 * File extension validation
-
 * Cryptographic hashes (SHA-256, MD5, SHA-1, TLSH)
 
 ### Static Analysis
 
 * Headers: PE/ELF/OLE format specific header strucuters. 
-
 * Sections: Names, sizes, entropy, characteristics, virtual address mappings.
-
 * Imports: Function imports, libaries, resolved API signatures. 
-
 * Exports: Exported functions and ordinals. 
-
 * Strings: Printable and wide strings with offsets and encodings.
-
 * Resources: Embedded resources and digital signatures (PE)
-
 * Security Characterstics: ASLE, DEP, SEH flags.
-
 * Function Hashes: ssdeep, imphash, and user function disassembly hashing.
-
 * Entropy Measurements: Section and overall file entropy. 
-
 * IOC Patterns: Regular expression indicator extraction.
-
 * YARA Rule Matches: Detection signatures and classifications.
 
 ### Optional Dynamic Analysis
 
 * Process Events: Process creation, module loading, system call events.
-
 * Network Activity: Domain names, IP addresses, URLs, DNS queries.
-
 * File Operations: Writes, reads, dropped files, temporary files.
-
 * Registry Operations: Queried or modified registry keys (Windows)
-
 * Behavioral Signatures: Known behavioral patterns and anomaly indicators. 
 
 ### Emulation
 
 * Instruction Trace: Ordered list of executed instructions.
-
 * API Calls: Invoked APIs with parameters and return values.
-
 * Decoded Buffers: Memory regions from decryption/unpacking routines.
-
 * Side Effects: Register changes, memory writes, control-flow transitions.
 
 ### Threat Intelligence 
 
 * VirusTotal: Vendor detections, sandbox observations, reputation scores, community labels.
-
 * AbuseCH: Malware URLs, C2 domains, botnet trackers, family classifications, TLS fingerprints.
-
 * AbuseIPDB: Abuse confidence scores, attack categories, report frequency, geographic attribution.
-
 * OSINT Context: Automated Google search results for sample related intelligence. 
 
 ### Corelation Metrics
 
 * Function Hash Simularity: User function disassembly hash comparisons.
-
 * Behavior Similarity: Dynamic/Emulation behavior alignment.
-
 * Attribute Simulairty: Structural, metadata, and import library comparisons.
-
 * Combined Scoring: Weighted score combining static, dynamic, emulation, and IOC metrics. 
 
-## Usage
+---
 
-### CLI
+# Planned / Upcoming Features
+
+- **AI-Assisted Malware Summaries**: LLM-based summarization will assist analysts in generating rapid reports from analysis data.
+
+- **Automated Campaign Detection**: INFLEX will support automated clustering of related samples across file types.
+
+- **Expanded Format Support**: Future versions will support additional formats including scripts and macro-based malware.
+
+---
+
+# Usage
+
+## CLI
+INFLEX provides a command-line interface for automated malware analysis workflows.
+
+put commands here
+
+## GUI
+A web-based interface allows analysts to:
+
+- upload samples
+- search analysis reports
+- perform correlation queries
+- explore relationships between artifacts
+
+---
+
+# Research Context
+
+INFLEX is developed as part of an ongoing research effort to improve **automated malware analysis and cross-artifact correlation at scale**.
+
+The system is designed to analyze hundreds of samples concurrently and identify relationships between malware artifacts, infrastructure, and behaviors.
+
+---
+
+# Setup
 
 
-### GUI
+## Dependencies 
 
 
-## Setup
-
-
-### Dependencies 
-
-
-## Background and Rational of INFLEX
-
+---
