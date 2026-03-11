@@ -2,8 +2,6 @@
   <img src="Resources/INFLEX_logo.png" width="600">
 </p>
 
-# INFLEX
-
 ## Overview
 INFLEX is a **heterogeneous malware analysis framework** designed to analyze and relate malicious artifacts across multiple file formats. The system combines static analysis, emulation, optional dynamic sandboxing, and threat intelligence enrichment to extract behavioral and structural features from malware samples.
 
