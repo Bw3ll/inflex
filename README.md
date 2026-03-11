@@ -1,4 +1,6 @@
-project image here - the one you shared with me on slack
+<p align="center">
+  <img src="Resources/INFLEX_logo.png" width="600">
+</p>
 
 # INFLEX
 
@@ -8,6 +10,12 @@ INFLEX is a **heterogenous malware analysis framework** designed to analyze and 
 Unlike traditional tools that focus on a single file format or analysis technique, INFLEX normalizes analysis outputs across formats such as PE, ELF, shellcode, and OLE documents, enabling cross-domain correlation of malware families, shared infrastructure, novel indicators, and behavioral patterns.
 
 All results are stored in scalable Elasticsearch database and indexed for rapid search, enabling analysts to perform automated and user-driven correlation across large malware collections through an intuitive search interface to achieve rapid threat intelligence enrichment and scalable sample processing.
+
+---
+
+# DEMO
+
+[![Watch the video](https://github.com/Bw3ll/inflex/blob/main/Resources/INFLEX_Dashboard_New.png)](https://drive.google.com/file/d/186E1rkjoFH5v31mSk4s1FAHDvwlPlUo7/view)
 
 ---
 
@@ -148,7 +156,9 @@ INFLEX uses Elasticsearch for fast search and analyst-driven correlation queries
 
 # Analysis Workflow
 
-picture of the workflow here. reference Slack for more info
+<p align="center">
+  <img src="Resources/INFLEX_workflow.png" width="600">
+</p>
 
 ---
 
