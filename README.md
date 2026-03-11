@@ -5,7 +5,7 @@
 # INFLEX
 
 ## Overview
-INFLEX is a **heterogenous malware analysis framework** designed to analyze and relate malicious artifacts across multiple file formats. The system combines static analysis, emulation, optional dynamic sandboxing, and threat intelligence enrichment to extract behavioral and structural features from malware samples.
+INFLEX is a **heterogeneous malware analysis framework** designed to analyze and relate malicious artifacts across multiple file formats. The system combines static analysis, emulation, optional dynamic sandboxing, and threat intelligence enrichment to extract behavioral and structural features from malware samples.
 
 Unlike traditional tools that focus on a single file format or analysis technique, INFLEX normalizes analysis outputs across formats such as PE, ELF, shellcode, and OLE documents, enabling cross-domain correlation of malware families, shared infrastructure, novel indicators, and behavioral patterns.
 
@@ -50,7 +50,7 @@ This allows the system to detect:
 - Shared developer toolchains
 
 ## 4. Threat Intelligence Enrichment
-INFLEX enriches samples using external intelligence sources including:
+INFLEX enriches samples using external intelligence sources, including:
 
 - VirusTotal
 - AbuseCH
@@ -123,7 +123,7 @@ Engines:
 - ViperMonkey (malicious macros) https://github.com/decalage2/ViperMonkey
 
 ## 5. Optional Dynamic Analysis
-INFLEX optionally integrates sandbox analysis (CAPEv2 https://github.com/kevoreilly/CAPEv2) to capture runtime behaviors including:
+INFLEX optionally integrates sandbox analysis (CAPEv2 https://github.com/kevoreilly/CAPEv2) to capture runtime behaviors, including:
 
 - process activity
 - network communications
@@ -178,7 +178,7 @@ INFLEX uses Elasticsearch for fast search and analyst-driven correlation queries
 
 * Multi-format ingestion supporting PE, ELF, shellcode, and OLE documents.
 * Static analysis with entropy computation, string extraction, and function hashing.
-* Disassembly and control flow analsyis via radare2.
+* Disassembly and control flow analysis via radare2.
 * Optional CAPEv2 sandbox integration for dynamic behavior capture.
 * YARA rule matching with support for custom rule uploads.
 * Threat intelligence enrichment from VirusTotal, AbuseCH, AbuseIPDB, and automated OSINT searches.
@@ -200,13 +200,13 @@ INFLEX extracts a wide range of features across analysis stages.
 
 ### Static Analysis
 
-* Headers: PE/ELF/OLE format specific header strucuters. 
+* Headers: PE/ELF/OLE format specific header structures. 
 * Sections: Names, sizes, entropy, characteristics, virtual address mappings.
-* Imports: Function imports, libaries, resolved API signatures. 
+* Imports: Function imports, libraries, resolved API signatures. 
 * Exports: Exported functions and ordinals. 
 * Strings: Printable and wide strings with offsets and encodings.
 * Resources: Embedded resources and digital signatures (PE)
-* Security Characterstics: ASLE, DEP, SEH flags.
+* Security Characteristics: ASLE, DEP, SEH flags.
 * Function Hashes: ssdeep, imphash, and user function disassembly hashing.
 * Entropy Measurements: Section and overall file entropy. 
 * IOC Patterns: Regular expression indicator extraction.
@@ -234,11 +234,11 @@ INFLEX extracts a wide range of features across analysis stages.
 * AbuseIPDB: Abuse confidence scores, attack categories, report frequency, geographic attribution.
 * OSINT Context: Automated Google search results for sample related intelligence. 
 
-### Corelation Metrics
+### Correlation Metrics
 
-* Function Hash Simularity: User function disassembly hash comparisons.
+* Function Hash Similarity: User function disassembly hash comparisons.
 * Behavior Similarity: Dynamic/Emulation behavior alignment.
-* Attribute Simulairty: Structural, metadata, and import library comparisons.
+* Attribute Similarity: Structural, metadata, and import library comparisons.
 * Combined Scoring: Weighted score combining static, dynamic, emulation, and IOC metrics. 
 
 ---
@@ -249,7 +249,7 @@ INFLEX extracts a wide range of features across analysis stages.
 
 - **Automated Campaign Detection**: INFLEX will support automated clustering of related samples across file types.
 
-- **Expanded Format Support**: Future versions will support additional formats including scripts and macro-based malware.
+- **Expanded Format Support**: Future versions will support additional formats, including scripts and macro-based malware.
 
 ---
 
@@ -258,7 +258,7 @@ INFLEX extracts a wide range of features across analysis stages.
 ## CLI
 INFLEX provides a command-line interface for automated malware analysis workflows.
 
-put commands here
+python inflex.py --file sample.exe
 
 ## GUI
 A web-based interface allows analysts to:
@@ -267,6 +267,41 @@ A web-based interface allows analysts to:
 - search analysis reports
 - perform correlation queries
 - explore relationships between artifacts
+
+<p align="center">
+  <img src="Resources/INFLEX_Dashboard_New.png" width="800">
+</p>
+<p align="center">
+  <em>Concise Analysis Dashboard</em>
+</p>
+
+<p align="center">
+  <img src="Resources/INFLEX_Sample_Report.png" width="800">
+</p>
+<p align="center">
+  <em>Full Sample Reports</em>
+</p>
+
+<p align="center">
+  <img src="Resources/INFLEX_Upload_File.png" width="800">
+</p>
+<p align="center">
+  <em>Heterogenous File Uploads</em>
+</p>
+
+<p align="center">
+  <img src="Resources/INFLEX_User_Search.png" width="800">
+</p>
+<p align="center">
+  <em>User Correlation Support</em>
+</p>
+
+<p align="center">
+  <img src="Resources/INFLEX_Advanced_Search.png" width="800">
+</p>
+<p align="center">
+  <em>Deep User Correlation Support</em>
+</p>
 
 ---
 
@@ -280,8 +315,26 @@ The system is designed to analyze hundreds of samples concurrently and identify 
 
 # Setup
 
+INFLEX integrates multiple analysis engines and threat intelligence sources to extract deep structural and behavioral features from malware samples. Because INFLEX combines static analysis, emulation, optional sandbox execution, and threat intelligence enrichment, several external tools and Python libraries are required.
+
+Before running INFLEX, ensure your environment satisfies the following dependencies.
 
 ## Dependencies 
 
+* Python 3.10+
+
+* WSL2
+
+* ViperMonkey in WSL
+
+* radare2
+
+* Elasticsearch
+
+* CAPEv2 (optional)
+
+* Docker (for sandbox environments)
+
+* Required API keys for VirusTotal, AbuseCH, and OpenAI
 
 ---
