@@ -11,7 +11,7 @@ All results are stored in scalable Elasticsearch database and indexed for rapid 
 
 ---
 
-# DEMO
+# Video Demo (click on image below)
 
 [![Watch the video](https://github.com/Bw3ll/inflex/blob/main/Resources/INFLEX_Dashboard_New.png)](https://drive.google.com/file/d/186E1rkjoFH5v31mSk4s1FAHDvwlPlUo7/view)
 
