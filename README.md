@@ -116,7 +116,6 @@ INFLEX integrates multiple emulation engines to extract runtime behaviors.
 - behavioral extraction
 
 Engines:
-- BEAST
 - SHAREM (shellcode) https://github.com/Bw3ll/sharem
 - ViperMonkey (malicious macros) https://github.com/decalage2/ViperMonkey
 
@@ -320,19 +319,12 @@ Before running INFLEX, ensure your environment satisfies the following dependenc
 ## Dependencies 
 
 * Python 3.10+
-
 * WSL2
-
 * ViperMonkey in WSL
-
 * radare2
-
 * Elasticsearch
-
 * CAPEv2 (optional)
-
 * Docker (for sandbox environments)
-
 * Required API keys for VirusTotal, AbuseCH, and OpenAI
 
 ---
