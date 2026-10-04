@@ -2,11 +2,14 @@
 # TODO: Merge the found data here into the files analysis and actually pipeline it now that these have been tested
 import csv
 import json
+import os
 import time
+from pathlib import Path
 import requests
 from abuseipdb_wrapper import AbuseIPDB  # pip install abuseipdb-wrapper
 from malwarebazaar import Bazaar, Yaraify  # pip install malwarebazaar
 from malwarebazaar.models import YaraRule
+from threat_intelligence.MITRE.mitre_updator import run_mitre
 
 # ======================================
 # CONFIGURATION
@@ -17,6 +20,26 @@ ABUSECH_URL = "https://mb-api.abuse.ch/api/v1/"
 
 STATIC_ANALYSIS_JSON = "results/326f11e54eb9ba91af95f629ad041c461066c3cd88dc73b6f3bccf5eedecae54.json"
 OUTPUT_FILE = "threat_intel_full.json"
+
+
+
+def load_runtime_config() -> dict:
+    """Load non-secret runtime settings from the project-level config.json."""
+    config_path = Path(__file__).resolve().parents[1] / "config.json"
+    if not config_path.exists():
+        return {}
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[!] Could not load threat-intelligence runtime config: {e}")
+        return {}
+
+
+def is_paid_key(config: dict, setting_name: str) -> bool:
+    """Return True only when a provider has explicitly been marked as a paid key."""
+    return config.get(setting_name) is True
 
 
 def load_api_keys(csv_path: str) -> dict:
@@ -99,7 +122,7 @@ def query_virustotal(VT_API_KEY, sha256_hash, detailed=False):
 # ABUSEIPDB ENRICHMENT
 # ======================================
 
-def query_abuseipdb(ABUSEIPDB_KEY, ip_list):
+def query_abuseipdb(ABUSEIPDB_KEY, ip_list, paid_key=False):
     """Query AbuseIPDB for IP reputation information."""
     if not ABUSEIPDB_KEY:
         return {ip: {"error": "ABUSEIPDB_KEY not configured"} for ip in ip_list}
@@ -145,7 +168,8 @@ def query_abuseipdb(ABUSEIPDB_KEY, ip_list):
         except Exception as e:
             results[ip] = {"error": str(e)}
 
-        time.sleep(2)  # API rate-limit safety
+        if not paid_key:
+            time.sleep(2)  # Free-tier API rate-limit safety
 
     return results
 
@@ -442,7 +466,7 @@ def query_google_search(SERP_API_KEY, sha256_hash, pages=2, verify_content: bool
 # MAIN ENRICHMENT CONTROLLER
 # ======================================
 
-def enrich_threat_data(sample_data=None):
+def enrich_threat_data(sample_data=None, sample_path=None):
     """
     Enrich threat intelligence data and return it.
     Does not modify files directly - returns enriched data for multiprocessing pipeline.
@@ -453,25 +477,56 @@ def enrich_threat_data(sample_data=None):
     Returns:
         Dictionary with threat intelligence results, or None on error
     """
+    print("DID WE EVEN MAKE IT IN")
     # Use provided data or defaults
     if sample_data is None:
         sample_data = {}
     
     api_keys = load_api_keys("threat_intelligence\\keys.csv")
+    runtime_config = load_runtime_config()
+    vt_paid_key = is_paid_key(runtime_config, "vt_paid_key")
+    abuseipdb_paid_key = is_paid_key(runtime_config, "abuseipdb_paid_key")
+    abusech_paid_key = is_paid_key(runtime_config, "abusech_paid_key")
 
-    # Extract hashes and IPs from the provided data
-    # Adjust these paths based on your actual JSON structure
+    print("KEYS LOADED?", api_keys )
+    print(f"[*] Paid API tiers - VT: {vt_paid_key}, AbuseIPDB: {abuseipdb_paid_key}, AbuseCH: {abusech_paid_key}")
+
+    # Extract hashes and IPs from the provided data.
+    # Build a deduplicated list: sha256 first, then md5/sha1 from static_analysis.
+    # Use an ordered set pattern so VT is queried with sha256 once, then
+    # falls back to md5/sha1 only if sha256 is missing.
+    _seen_hashes = set()
     hashes = []
     ips = []
-    
-    # Try to extract from ingest_analysis
-    if "ingest_analysis" in sample_data:
-        if "sha256" in sample_data["ingest_analysis"]:
-            hashes.append(sample_data["ingest_analysis"]["sha256"])
-    
-    # Try to extract from static_analysis
-    if "static_analysis" in sample_data and "hashes" in sample_data["static_analysis"]:
-        hashes.extend(sample_data["static_analysis"]["hashes"].values() if isinstance(sample_data["static_analysis"]["hashes"], dict) else [sample_data["static_analysis"]["hashes"]])
+
+    file_path = "MITRE/mitre_store1.json"
+
+    try:
+        if not os.path.isfile(file_path):
+            with open(file_path, "w") as f:
+                pass
+        print("Made it past MITRE file")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+
+    def _add_hash(h):
+        if h and isinstance(h, str) and h not in _seen_hashes:
+            _seen_hashes.add(h)
+            hashes.append(h)
+
+    # Primary: sha256 from ingest_analysis (most authoritative)
+    _add_hash(sample_data.get("ingest_analysis", {}).get("sha256"))
+
+    print("HOW ABOUT HASHES:", hashes)
+
+    # Secondary: hashes block from static_analysis (may include md5, sha1, imphash)
+    static_hashes = sample_data.get("static_analysis", {}).get("hashes", {})
+    if isinstance(static_hashes, dict):
+        # Add sha256 first so it wins the VT query, then others
+        _add_hash(static_hashes.get("sha256"))
+        for _hval in static_hashes.values():
+            _add_hash(_hval)
     
     # Try to extract IPs from strings
     if "static_analysis" in sample_data and "strings" in sample_data["static_analysis"]:
@@ -479,13 +534,13 @@ def enrich_threat_data(sample_data=None):
             ips.extend(sample_data["static_analysis"]["strings"]["interesting"].get("ips", []))
     
     # Use defaults if nothing was extracted
-    if not hashes:
-        hashes = [
-            "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",  # EICAR test file
-            "11b16ba733f2f4f10ac58021eecaf5668551a73e2a1acfae99745c50bfccbb44"
-        ]
-    if not ips:
-        ips = ["123.145.167.89"]
+    # if not hashes:
+    #     hashes = [
+    #         "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",  # EICAR test file
+    #         "11b16ba733f2f4f10ac58021eecaf5668551a73e2a1acfae99745c50bfccbb44"
+    #     ]
+    # if not ips:
+    #     ips = ["123.145.167.89"]
 
     # Where to look on the actual static analysis JSON structure
     # hashes = static_data["ingest_analysis"]["sha256"]
@@ -508,17 +563,21 @@ def enrich_threat_data(sample_data=None):
     print("[*] Querying VirusTotal...")
     for sha in hashes:
         results["VirusTotal"][sha] = query_virustotal(api_keys["VT_API_KEY"], sha, detailed=True)  # Use simple format
-        time.sleep(15)  # VT rate limit safety
+        if not vt_paid_key:
+            time.sleep(15)  # Free-tier VT rate-limit safety
 
     # === ABUSEIPDB ===
     print("[*] Querying AbuseIPDB...")
-    results["AbuseIPDB"] = query_abuseipdb(api_keys["ABUSEIPDB_KEY"], ips)
+    results["AbuseIPDB"] = query_abuseipdb(
+        api_keys["ABUSEIPDB_KEY"], ips, paid_key=abuseipdb_paid_key
+    )
 
     # === ABUSE.CH ===
     print("[*] Querying Abuse.ch (MalwareBazaar)...")
     for sha in hashes:
         results["AbuseCH"][sha] = query_abusech(sha, auth_key=api_keys.get("MALWAREBAZAAR_KEY"))
-        time.sleep(3)
+        if not abusech_paid_key:
+            time.sleep(3)  # Free-tier AbuseCH/MalwareBazaar rate-limit safety
 
     # NOT SURE IF WE EVEN WANT THIS ENRICHMENT AT ALL
     # # === MALWAREBAZAAR / YARAIFY ===
@@ -531,6 +590,97 @@ def enrich_threat_data(sample_data=None):
     # for sha in hashes:
     #     results["GoogleSearch"][sha] = query_google_search(api_keys["SERP_API_KEY"], sha, pages=2)
     #     time.sleep(2)
+
+    # === PREPARE THREAT DATA FOR MITRE/FINAL VERDICT ===
+    # Extract threat scores from collected intelligence for final verdict
+    vt_result = None
+    abuse_result = 0.0
+    
+    # Get VirusTotal data by checking all hashes
+    # Iterate through all hashes to find one with valid VT results
+
+    print("VIRUSTOTAL RESULTS:", results["VirusTotal"])  # Debug print to see the VT results structure
+    print("ABUSECH RESULTS:", results["AbuseCH"])  # Debug print to see the AbuseCH results structure
+
+    for sha in hashes:
+        if sha in results["VirusTotal"]:
+            vt_data = results["VirusTotal"][sha]
+            
+            # Check for errors first
+            if isinstance(vt_data, dict) and "error" in vt_data:
+                print(f"[!] VirusTotal error for {sha[:16]}...: {vt_data['error']}")
+                continue
+            
+            # Handle new VT API format with analysis_stats
+            if isinstance(vt_data, dict) and "analysis_stats" in vt_data:
+                stats = vt_data["analysis_stats"]
+                malicious = stats.get("malicious", 0)
+                # Total = main detection categories (exclude timeout, failure, type-unsupported)
+                total = (stats.get("malicious", 0) + 
+                        stats.get("suspicious", 0) + 
+                        stats.get("undetected", 0) + 
+                        stats.get("harmless", 0))
+                
+                if total > 0:
+                    # Convert to format expected by final_verdict
+                    vt_result = {"positives": malicious, "total": total}
+                    print(f"[+] VirusTotal score for {sha[:16]}...: {malicious}/{total}")
+                    break
+            
+            # Handle old VT API format (if it exists)
+            elif isinstance(vt_data, dict) and "positives" in vt_data and "total" in vt_data:
+                vt_result = vt_data
+                print(f"[+] VirusTotal score for {sha[:16]}...: {vt_data['positives']}/{vt_data['total']}")
+                break
+    
+    if not vt_result:
+        print(f"[!] No valid VirusTotal results found for any hash - file likely not in VT database")
+    
+    # Aggregate AbuseIPDB and AbuseCH results for abuse_result score
+    # If any IPs are flagged highly or hashes are known malware, increase abuse_result
+    if results["AbuseIPDB"]:
+        # If we have abuse scores from IPs, aggregate them
+        abuse_scores = []
+        for ip, ip_data in results["AbuseIPDB"].items():
+            if isinstance(ip_data, dict) and "abuseConfidenceScore" in ip_data:
+                # Normalize to 0-1 range (VirusTotal uses 0-100)
+                abuse_scores.append(ip_data["abuseConfidenceScore"] / 100.0)
+        if abuse_scores:
+            abuse_result = min(sum(abuse_scores) / len(abuse_scores), 1.0)
+            print(f"[+] AbuseIPDB average confidence: {abuse_result:.3f}")
+    
+    # Check AbuseCH for known malware hashes by checking all hashes
+    abuse_ch_found = False
+    for sha in hashes:
+        if sha in results["AbuseCH"]:
+            abuse_ch_data = results["AbuseCH"][sha]
+            if isinstance(abuse_ch_data, dict):
+                # If hash is found in abuse.ch (not hash_not_found), it's likely malware
+                if "error" not in abuse_ch_data or abuse_ch_data.get("error") != "hash_not_found":
+                    # Set abuse_result higher if known in abuse.ch
+                    abuse_result = max(abuse_result, 0.5)
+                    print(f"[+] Hash {sha[:16]}... found in Abuse.ch database")
+                    abuse_ch_found = True
+                    break  # Found known malware hash
+    
+    if not abuse_ch_found and hashes:
+        print(f"[!] No hashes found in Abuse.ch database")
+
+    # === MITRE ATT&CK ENRICHMENT ===
+    # Run MITRE ATT&CK analysis with all collected threat intelligence
+    print("[*] Querying MITRE ATT&CK with threat intelligence data...")
+    try:
+        mitre_results = run_mitre(
+            sample=sample_path,
+            vt_result=vt_result,
+            abuse_result=abuse_result,
+            osint_result=None  # OSINT not fully implemented yet
+        )
+        results["MITRE_ATTACK"] = mitre_results
+    except RuntimeError as e:
+        print(f"[!] MITRE ATT&CK analysis failed: {e}")
+        print("[!] Skipping MITRE enrichment for this sample")
+        results["MITRE_ATTACK"] = {"error": "MITRE analysis not supported for this file type"}
 
     print(f"[+] Threat intelligence enrichment complete")
     return results

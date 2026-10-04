@@ -238,8 +238,8 @@ th {
     background: rgba(234, 234, 234, 0.5);
 }
 
-/* Loading Overlay */
-.loading-overlay {
+/* Loading Overlay - Modified to not cover navbar */
+/* .loading-overlay {
     position: fixed;
     inset: 0;
     display: flex;
@@ -251,6 +251,31 @@ th {
 
 .loading-overlay.hidden {
     display: none;
+} */
+
+/* Status bar that doesn't block navigation */
+.loading-status-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background-color: #231F20;
+    color: white;
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    z-index: 40;
+    transform: translateY(100%);
+    transition: transform 0.3s ease-in-out;
+}
+
+.loading-status-bar.visible {
+    transform: translateY(0);
+}
+
+.loading-status-bar.hidden {
+    transform: translateY(100%);
 }
 
 .loading-spinner {

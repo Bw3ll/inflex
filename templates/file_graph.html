@@ -1,0 +1,1288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Malware Family Correlation Visualization</title>
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+  <style>
+    /*  Responsive layout fixes  */
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+    }
+
+    /* Stack the whole page as a flex column so the graph fills remaining height */
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 0;
+    }
+
+    .header {
+      flex-shrink: 0;
+      padding: 12px 20px 6px;
+    }
+
+    .header h1 { font-size: clamp(1rem, 2.5vw, 1.6rem); margin: 0; }
+    .header p  { font-size: clamp(0.7rem, 1.5vw, 0.9rem); margin: 4px 0 0; }
+
+    /* Main content row — graph + sidebar */
+    .main-content {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    /* Graph column */
+    .visualization-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    /* Controls bar — wrap on narrow screens */
+    .controls {
+      flex-shrink: 0;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+    }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+
+    .control-group label { font-size: 0.8em; white-space: nowrap; }
+
+    /* Timeline bar */
+    .timeline-controls {
+      flex-shrink: 0;
+      padding: 4px 12px;
+    }
+
+    /* The graph view fills all remaining vertical space */
+    .view-container {
+      flex: 1;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .tree-container {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .view-title {
+      flex-shrink: 0;
+      padding: 4px 12px;
+      font-size: 0.75em;
+    }
+
+    #functionTree {
+      flex: 1;
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Sidebar — fixed width, scrollable */
+    .sidebar {
+      width: 280px;
+      flex-shrink: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    @media (max-width: 900px) {
+      .main-content { flex-direction: column; }
+      .sidebar {
+        width: 100%;
+        max-height: 40vh;
+        border-top: 1px solid #eee;
+      }
+    }
+
+    /* Back button styling */
+    #backToAll {
+      background: #5a6a7a;
+      color: #fff;
+      border: none;
+      padding: 6px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.85em;
+      font-weight: 600;
+      transition: background .15s;
+    }
+    #backToAll:hover { background: #6e7e8e; }
+
+    /* Focus mode: dim unconnected nodes */
+    .tree-node.focus-dim { opacity: 0.06 !important; pointer-events: none; }
+    .tree-link.focus-dim { opacity: 0.04 !important; }
+    .tree-node.focus-dim text { display: none; }
+    /* Search / highlight styles */
+    .search-input { padding: 6px 8px; border-radius: 4px; border: 1px solid #ddd; min-width: 220px; }
+    .search-btn, .search-clear { padding: 6px 10px; border-radius: 4px; border: none; cursor: pointer; background: #AD974F; color: #fff; font-weight:600; }
+    .search-clear { background: #777; margin-left: 6px; }
+    .tree-node.focus-selected { opacity: 1 !important; }
+    /* Removed colored stroke for focus-selected to rely on fading only */
+    .tree-link.highlighted { stroke-opacity: 0.95 !important; stroke-width: 3 !important; }
+  </style>
+</head>
+<body>
+
+  <!-- Navbar -->
+  <header class="navbar">
+    <div class="logo">INFLEX</div>
+    <nav class="menu">
+      <a href="/">Dashboard</a>
+      <a href="/uploads">Uploads</a>
+      <a href="/search">Search Reports</a>
+      <a href="/graph">Graphs</a>
+      <a href="/settings">Settings</a>
+    </nav>
+  </header>
+
+<div class="container">
+  <div class="header">
+    <h1>Malware Family Correlation Visualization</h1>
+    <p>Function Similarity · Shared MITRE Techniques · Family Clustering</p>
+  </div>
+
+  <div class="main-content">
+    <div class="visualization-area">
+      <div class="controls">
+        <div class="control-group">
+          <label>Highlight Family:</label>
+          <select id="familyFilter">
+            <option value="all">All Families</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>Min Similarity:</label>
+          <select id="similarityThreshold">
+            <option value="0">All (0%)</option>
+            <option value="0.001" selected>Low (0.1%+)</option>
+            <option value="0.01">Medium (1%+)</option>
+            <option value="0.05">High (5%+)</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>Link Type:</label>
+          <select id="linkTypeFilter">
+            <option value="all">All Links</option>
+            <option value="function">Function Similarity</option>
+            <option value="technique">Shared Techniques</option>
+          </select>
+        </div>
+        <div class="control-group" id="searchGroup">
+          <label>Search:</label>
+          <input id="graphSearchInput" class="search-input" type="search" placeholder="hash or family name">
+          <button id="graphSearchBtn" class="search-btn">Find</button>
+          <button id="graphClearSearchBtn" class="search-clear">Clear</button>
+        </div>
+        <button id="resetView">Reset View</button>
+        <button id="backToAll" style="display:none;">← Back to All Samples</button>
+      </div>
+
+      <div class="timeline-controls">
+        <button class="timeline-play-btn" id="playTimeline">▶</button>
+        <div class="current-date-display" id="currentDateDisplay">—</div>
+        <div class="timeline-slider-container">
+          <input type="range" class="timeline-slider" id="timelineSlider"
+                 min="0" max="180" value="0" step="1">
+          <div class="timeline-labels" id="timelineLabels">
+            <!-- populated from data -->
+          </div>
+        </div>
+      </div>
+
+      <div class="view-container">
+        <div class="tree-container" id="treeContainer">
+          <div class="view-title">
+            Correlation Graph — same family clusters together · link thickness = similarity · dashed = shared MITRE technique
+          </div>
+          <svg id="functionTree"></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar">
+
+      <!-- Legend -->
+      <div class="legend">
+        <h4>Sample Classification</h4>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #dc3545;"></div>
+          <span>Confirmed Malware</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #ffc107;"></div>
+          <span>Suspicious</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #28a745;"></div>
+          <span>Benign</span>
+        </div>
+        <div style="margin-top: 15px; padding-top: 15px; border-top: 2px solid #EAEAEA;">
+          <strong style="color: #AD974F;">Proximity = Similarity:</strong>
+          <div style="margin-top: 8px; font-size: 0.85em;">
+            Nodes closer together share more functions and/or MITRE techniques.<br><br>
+            <span style="display:inline-block;width:30px;height:2px;background:#AD974F;vertical-align:middle;margin-right:5px"></span>Function link<br>
+            <span style="display:inline-block;width:30px;height:2px;border-top:2px dashed #7b5ea7;vertical-align:middle;margin-right:5px"></span>Technique link
+          </div>
+        </div>
+        <div style="margin-top: 15px; padding-top: 15px; border-top: 2px solid #EAEAEA;">
+          <strong style="color: #AD974F;">Temporal Encoding:</strong>
+          <div style="margin-top: 8px; font-size: 0.85em;">
+            Node opacity = Age<br>
+            <span style="opacity: 1;">●</span> Recent (0-30 days)<br>
+            <span style="opacity: 0.7;">●</span> Moderate (30-90 days)<br>
+            <span style="opacity: 0.4;">●</span> Old (90+ days)
+          </div>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="info-panel">
+        <h3>Dataset Overview</h3>
+        <div class="stats-grid">
+          <div class="stat-box">
+            <div class="stat-value" id="visibleSamples">0</div>
+            <div class="stat-label">Visible Samples</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="newSamplesCount">0</div>
+            <div class="stat-label">New This Period</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="activeFamilies">0</div>
+            <div class="stat-label">Active Families</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="totalSamples">0</div>
+            <div class="stat-label">Total Corpus</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Selected sample detail -->
+      <div class="info-panel" id="selectedSamplePanel">
+        <h3>Selected Sample</h3>
+        <div class="node-details">
+          <div class="detail-row">
+            <span class="detail-label">Sample ID:</span>
+            <span class="detail-value" id="sampleId">Click a sample</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Family:</span>
+            <span class="detail-value" id="familyName">-</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Classification:</span>
+            <span class="detail-value" id="classification">-</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">First Seen:</span>
+            <span class="detail-value" id="firstSeen">-</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Age:</span>
+            <span class="detail-value age-indicator" id="sampleAge">-</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Hash:</span>
+            <span class="detail-value sample-hash" id="sampleHash">-</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Confidence:</span>
+            <span class="detail-value" id="sampleConfidence">-</span>
+          </div>
+        </div>
+
+        <a id="viewReportBtn" href="#" target="_blank"
+           style="display:none; margin-top:14px; width:100%; box-sizing:border-box;
+                  padding:9px 0; background:#AD974F; color:#fff; font-weight:600;
+                  font-size:0.9em; text-align:center; border-radius:5px;
+                  text-decoration:none; letter-spacing:0.03em; transition:background .15s;"
+           onmouseover="this.style.background='#c9b06a'"
+           onmouseout="this.style.background='#AD974F'">
+          View Full Report ->
+        </a>
+
+        <h4 style="margin-top: 20px; color: #AD974F;">Techniques</h4>
+        <div id="techniqueBadges" style="margin-top: 10px;">
+          <span style="color: #999; font-size: 0.9em;">Select a sample to view techniques</span>
+        </div>
+
+        <h4 style="margin-top: 20px; color: #AD974F;">Key Functions</h4>
+        <ul class="function-list" id="functionList">
+          <li style="color: #999; text-align: center; padding: 20px;">Select a sample</li>
+        </ul>
+
+        <h4 style="margin-top: 20px; color: #AD974F;">Related Samples</h4>
+        <ul class="related-samples-list" id="relatedSamples">
+          <li style="color: #999; text-align: center; padding: 20px;">Select a sample</li>
+        </ul>
+
+        <!-- Technique overlap with selected sample -->
+        <div id="techniqueOverlapSection" style="display:none">
+          <h4 style="margin-top: 20px; color: #AD974F;">Technique Overlap</h4>
+          <div id="techniqueOverlapList" style="margin-top: 10px; font-size: 0.85em;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<!-- DB data injected by Flask/Jinja2 — do not edit these tags -->
+<script id="sample-data" type="application/json">{{ samples | tojson | safe }}</script>
+<script id="function-similarity-data" type="application/json">{{ functionSimilarity | tojson | safe }}</script>
+
+<script>
+// TECHNIQUE METADATA
+const familyTechniques = {
+  'Infector':    ['T1055', 'T1106', 'T1082'],
+  'Ransomware':  ['T1486', 'T1140', 'T1057'],
+  'InfoStealer': ['T1005', 'T1041', 'T1071'],
+  'Benign_Tool': ['T1106', 'T1057'],
+  'Wiper':       ['T1485', 'T1561'],
+  'Dropper':     ['T1105', 'T1204'],
+  'msil':        ['T1055', 'T1106'],
+  'Dridex':      ['T1027', 'T1129', 'T1082', 'T1057', 'T1033', 'T1087'],
+  'unknown':     []
+};
+
+const techniques = {
+  'T1027': { name: 'Obfuscated Files/Info',         color: '#9b59b6', tactic: 'Defense Evasion' },
+  'T1055': { name: 'Process Injection',              color: '#e74c3c', tactic: 'Privilege Escalation' },
+  'T1106': { name: 'Native API',                     color: '#3498db', tactic: 'Execution' },
+  'T1082': { name: 'System Info Discovery',          color: '#2ecc71', tactic: 'Discovery' },
+  'T1083': { name: 'File Discovery',                 color: '#f39c12', tactic: 'Discovery' },
+  'T1129': { name: 'Shared Modules',                 color: '#e67e22', tactic: 'Execution' },
+  'T1486': { name: 'Data Encrypted for Impact',      color: '#8e44ad', tactic: 'Impact' },
+  'T1005': { name: 'Data from Local System',         color: '#1abc9c', tactic: 'Collection' },
+  'T1053': { name: 'Scheduled Task',                 color: '#e67e22', tactic: 'Persistence' },
+  'T1490': { name: 'Inhibit System Recovery',        color: '#c0392b', tactic: 'Impact' },
+  'T1071': { name: 'Application Layer Protocol',     color: '#16a085', tactic: 'C2' },
+  'T1485': { name: 'Data Destruction',               color: '#8e44ad', tactic: 'Impact' },
+  'T1070': { name: 'Indicator Removal',              color: '#d35400', tactic: 'Defense Evasion' },
+  'T1204': { name: 'User Execution',                 color: '#27ae60', tactic: 'Execution' },
+  'T1140': { name: 'Deobfuscate/Decode Files',       color: '#8e44ad', tactic: 'Defense Evasion' },
+  'T1041': { name: 'Exfiltration Over C2',           color: '#e74c3c', tactic: 'Exfiltration' },
+  'T1105': { name: 'Ingress Tool Transfer',          color: '#3498db', tactic: 'C2' },
+  'T1561': { name: 'Disk Wipe',                      color: '#c0392b', tactic: 'Impact' },
+  'T1057': { name: 'Process Discovery',              color: '#388bfd', tactic: 'Discovery' },
+  'T1033': { name: 'System Owner/User Discovery',    color: '#2ea4a4', tactic: 'Discovery' },
+  'T1087': { name: 'Account Discovery',              color: '#2ecc71', tactic: 'Discovery' }
+};
+
+// LOAD DATA FROM DB (Jinja2 template tags)
+const samples = JSON.parse(document.getElementById('sample-data').textContent);
+const functionSimilarity = JSON.parse(document.getElementById('function-similarity-data').textContent);
+
+// Enrich samples — clamp bogus dates, handle null family, match lowercase family names
+const DATE_MIN = new Date('2000-01-01');
+const DATE_MAX = new Date('2030-12-31');
+const today    = new Date();
+samples.forEach(sample => {
+  const parsed = new Date(sample.date);
+  sample.timestamp = (parsed >= DATE_MIN && parsed <= DATE_MAX) ? parsed : today;
+  sample.firstSeen = sample.date;
+  sample.family    = sample.family || 'unknown';
+  sample.type      = sample.type   || 'malware';
+  if (!sample.techniques || sample.techniques.length === 0) {
+    const fam = sample.family;
+    sample.techniques = familyTechniques[fam]
+      || familyTechniques[fam.charAt(0).toUpperCase() + fam.slice(1)]
+      || [];
+  }
+  if (!sample.functions) sample.functions = [];
+});
+
+const colorMap = {
+  'malware':    '#dc3545',
+  'suspicious': '#ffc107',
+  'benign':     '#28a745'
+};
+
+// TIMELINE SETUP  (only uses sane dates — ignores bogus future/past outliers)
+const saneDates = samples.map(s => s.timestamp).filter(d => d >= DATE_MIN && d <= DATE_MAX);
+const startDate = saneDates.length ? new Date(Math.min(...saneDates)) : new Date('2015-01-01');
+const endDate   = saneDates.length ? new Date(Math.max(...saneDates)) : today;
+const totalDays = Math.max(1, Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)));
+
+const slider = document.getElementById('timelineSlider');
+slider.max   = totalDays;
+slider.value = totalDays;
+
+// Build timeline labels from actual date range
+(function buildTimelineLabels() {
+  const container = document.getElementById('timelineLabels');
+  const labelCount = Math.min(6, totalDays);
+  container.innerHTML = '';
+  for (let i = 0; i <= labelCount; i++) {
+    const d = new Date(startDate);
+    d.setDate(d.getDate() + Math.round((totalDays / labelCount) * i));
+    const span = document.createElement('span');
+    span.textContent = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    container.appendChild(span);
+  }
+})();
+
+let currentDate = new Date(endDate);
+let isPlaying   = false;
+let playInterval = null;
+
+// FAMILY FILTER DROPDOWN  (populated from DB data)
+const families = [...new Set(samples.map(s => s.family))].filter(Boolean).sort();
+const familyFilterEl = document.getElementById('familyFilter');
+families.forEach(family => {
+  const opt = document.createElement('option');
+  opt.value = family;
+  opt.textContent = family.charAt(0).toUpperCase() + family.slice(1);
+  familyFilterEl.appendChild(opt);
+});
+
+// SVG / ZOOM SETUP
+const treeContainer = document.getElementById('treeContainer');
+let treeWidth  = treeContainer.clientWidth  || 800;
+let treeHeight = treeContainer.clientHeight || 600;
+
+const treeSvg = d3.select('#functionTree')
+  .attr('width',  treeWidth)
+  .attr('height', treeHeight);
+
+const treeGroup = treeSvg.append('g');
+
+const treeZoom = d3.zoom()
+  .scaleExtent([0.3, 6])
+  .on('zoom', event => treeGroup.attr('transform', event.transform));
+treeSvg.call(treeZoom);
+
+let selectedSample = null;
+let simulation;
+
+// HELPER FUNCTIONS
+function getAgeInDays(sampleDate, referenceDate) {
+  return Math.floor((referenceDate - sampleDate) / (1000 * 60 * 60 * 24));
+}
+
+function getOpacityForAge(age) {
+  if (age < 30)  return 1;
+  if (age < 90)  return 0.7;
+  return 0.4;
+}
+
+function formatDate(date) {
+  return date.toISOString().split('T')[0];
+}
+
+// Count shared MITRE techniques between two samples
+function sharedTechniqueCount(a, b) {
+  const setA = new Set(a.techniques || []);
+  return (b.techniques || []).filter(t => setA.has(t)).length;
+}
+
+// CORE: BUILD AND RENDER THE GRAPH
+function createFunctionTree() {
+  const simThreshold  = parseFloat(document.getElementById('similarityThreshold').value);
+  const linkTypeFilter = document.getElementById('linkTypeFilter').value;
+
+  treeGroup.selectAll('*').remove();
+  if (simulation) simulation.stop();
+
+  //  Build edges 
+  const links = [];
+  const linkKeySet = new Set();
+
+  // 1. Function-similarity links (from DB)
+  if (linkTypeFilter === 'all' || linkTypeFilter === 'function') {
+    samples.forEach(sample => {
+      const similarities = functionSimilarity[sample.hash] || {};
+      Object.entries(similarities).forEach(([targetId, similarity]) => {
+        if (similarity < simThreshold) return;
+        const target = samples.find(s => s.hash === targetId || s.id === targetId);
+        if (!target) return;
+        const key = [sample.hash, target.hash].sort().join('->');
+        if (linkKeySet.has(key)) return;
+        linkKeySet.add(key);
+        const daysDiff = Math.abs(getAgeInDays(sample.timestamp, target.timestamp));
+        links.push({
+          source:    sample,
+          target:    target,
+          similarity: similarity,
+          temporal:  daysDiff <= 30,
+          type:      'function'
+        });
+      });
+    });
+  }
+
+  // 2. MITRE technique links — connect pairs that share >=1 technique
+  if (linkTypeFilter === 'all' || linkTypeFilter === 'technique') {
+    for (let i = 0; i < samples.length; i++) {
+      for (let j = i + 1; j < samples.length; j++) {
+        const a = samples[i], b = samples[j];
+        const shared = sharedTechniqueCount(a, b);
+        if (shared === 0) continue;
+        // Only add if there's no function link already (avoid double edges)
+        const key = [a.hash, b.hash].sort().join('->');
+        if (linkKeySet.has(key)) continue;
+        linkKeySet.add(key);
+        links.push({
+          source:    a,
+          target:    b,
+          similarity: shared / Math.max(a.techniques.length, b.techniques.length, 1),
+          temporal:  false,
+          type:      'technique',
+          sharedTechs: shared
+        });
+      }
+    }
+  }
+
+  //  Force simulation 
+  //
+  // Key design:
+  //   • Same family -> strong x/y attraction to a shared family centroid
+  //   • High function similarity -> short link distance
+  //   • Shared MITRE techniques -> medium link distance
+  //   • Different families with no link -> repel apart
+  //
+  const familyList = [...new Set(samples.map(s => s.family))];
+  const familyCentroids = {};
+  familyList.forEach((fam, i) => {
+    const angle = (i / familyList.length) * 2 * Math.PI - Math.PI / 2;
+    const radius = Math.min(treeWidth, treeHeight) * 0.38;
+    familyCentroids[fam] = {
+      x: treeWidth  / 2 + Math.cos(angle) * radius,
+      y: treeHeight / 2 + Math.sin(angle) * radius
+    };
+  });
+
+  //  Pre-compute "best neighbour family" for unknown nodes 
+  // For each unknown node, tally weighted votes from its links:
+  //   - function-similarity links -> full weight
+  //   - technique links           -> 0.35× weight (weaker signal)
+  // The top-voted known family becomes that node's soft centroid target.
+  const unknownFamilyHint = {};  // hash -> family string
+  samples.forEach(s => {
+    if (s.family !== 'unknown') return;
+
+    const votes = {};
+    links.forEach(lk => {
+      const srcHash = typeof lk.source === 'object' ? lk.source.hash : lk.source;
+      const tgtHash = typeof lk.target === 'object' ? lk.target.hash : lk.target;
+      const isMine  = srcHash === s.hash || tgtHash === s.hash;
+      if (!isMine) return;
+
+      const peer = (srcHash === s.hash)
+        ? (typeof lk.target === 'object' ? lk.target : samples.find(x => x.hash === tgtHash))
+        : (typeof lk.source === 'object' ? lk.source : samples.find(x => x.hash === srcHash));
+      if (!peer || peer.family === 'unknown') return;
+
+      const weight = lk.type === 'technique'
+        ? lk.similarity * 0.35
+        : lk.similarity;          // function link — full weight
+
+      votes[peer.family] = (votes[peer.family] || 0) + weight;
+    });
+
+    if (Object.keys(votes).length === 0) return;
+
+    const totalVotes = Object.values(votes).reduce((a, b) => a + b, 0);
+    const topFam = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
+    const majorityRatio = topFam[1] / totalVotes;
+
+    // Only assign hint when one family clearly dominates (>= 40 %)
+    if (majorityRatio >= 0.40) {
+      unknownFamilyHint[s.hash] = topFam[0];
+    }
+  });
+
+  simulation = d3.forceSimulation(samples)
+    // Link forces — function links pull harder than technique links
+    .force('link', d3.forceLink(links)
+      .id(d => d.hash)
+      .distance(d => {
+        if (d.type === 'technique') return Math.max(60, 140 - d.sharedTechs * 25);
+        const sim = Math.max(0.0001, d.similarity);
+        if (sim >= 0.90) return 30;
+        if (sim >= 0.70) return 60;
+        if (sim >= 0.50) return 100;
+        if (sim >= 0.20) return 160;
+        if (sim >= 0.05) return 220;
+        return 280;
+      })
+      .strength(d => {
+        if (d.type === 'technique') return 0.15;
+        const sim = Math.max(0.0001, d.similarity);
+        if (sim >= 0.90) return 1.0;
+        if (sim >= 0.70) return 0.85;
+        if (sim >= 0.50) return 0.6;
+        if (sim >= 0.20) return 0.3;
+        if (sim >= 0.05) return 0.15;
+        return 0.05;  // very weak pull for sub-1% links
+      })
+    )
+    // Strong repulsion so unrelated families spread apart
+    .force('charge', d3.forceManyBody().strength(-280))
+    // Very weak center pull — let family forces do the positioning
+    .force('center', d3.forceCenter(treeWidth / 2, treeHeight / 2).strength(0.01))
+    // Prevent node overlap
+    .force('collision', d3.forceCollide().radius(26))
+    // Family centroid attraction — primary clustering force, stronger than before
+    // Unknown nodes with a clear neighbour majority are pulled toward that family's
+    // centroid at reduced strength (0.18) so they visually associate without merging.
+    .force('familyX', d3.forceX(d => {
+      const effectiveFam = (d.family === 'unknown' && unknownFamilyHint[d.hash])
+        ? unknownFamilyHint[d.hash]
+        : d.family;
+      return (familyCentroids[effectiveFam] || { x: treeWidth / 2 }).x;
+    }).strength(d => {
+      if (d.family !== 'unknown') return 0.35;
+      return unknownFamilyHint[d.hash] ? 0.18 : 0.05;
+    }))
+    .force('familyY', d3.forceY(d => {
+      const effectiveFam = (d.family === 'unknown' && unknownFamilyHint[d.hash])
+        ? unknownFamilyHint[d.hash]
+        : d.family;
+      return (familyCentroids[effectiveFam] || { y: treeHeight / 2 }).y;
+    }).strength(d => {
+      if (d.family !== 'unknown') return 0.35;
+      return unknownFamilyHint[d.hash] ? 0.18 : 0.05;
+    }));
+
+  //  Family colour map (used for node rings and link colouring) 
+  const familyColors = [
+    '#AD974F', '#dc3545', '#388bfd', '#2ea4a4', '#bc8cff',
+    '#3fb950', '#ff7eb6', '#d29922', '#e05252', '#27ae60'
+  ];
+  const famColorMap = {};
+  familyList.forEach((fam, i) => {
+    famColorMap[fam] = familyColors[i % familyColors.length];
+  });
+
+  //  Draw links 
+  const linkElements = treeGroup.selectAll('.tree-link')
+    .data(links)
+    .enter()
+    .append('line')
+    .attr('class', d => `tree-link ${d.type === 'technique' ? 'technique-link' : ''} ${d.temporal ? 'temporal' : ''}`)
+    .attr('stroke', d => {
+      if (d.type === 'technique') return '#7b5ea7';
+      // Function links: colour by same/different family
+      const sameFam = d.source.family === d.target.family;
+      return sameFam ? famColorMap[d.source.family] || '#AD974F' : '#999';
+    })
+    .attr('stroke-opacity', d => d.type === 'technique' ? 0.35 : 0.55)
+    .attr('stroke-width', d => {
+      if (d.type === 'technique') return 1;
+      return Math.max(1, d.similarity * 6);
+    })
+    .attr('stroke-dasharray', d => d.type === 'technique' ? '5 4' : 'none');
+
+  //  Draw nodes 
+  const nodeElements = treeGroup.selectAll('.tree-node')
+    .data(samples)
+    .enter()
+    .append('g')
+    .attr('class', 'tree-node')
+    .call(
+      d3.drag()
+        .on('start', dragstarted)
+        .on('drag',  dragged)
+        .on('end',   dragended)
+    );
+
+  // Outer family-colour ring
+  nodeElements.append('circle')
+    .attr('r', 16)
+    .attr('fill', 'none')
+    .attr('stroke', d => famColorMap[d.family] || '#ccc')
+    .attr('stroke-width', 2)
+    .attr('stroke-opacity', 0.4);
+
+  // Main classification dot
+  nodeElements.append('circle')
+    .attr('r', 12)
+    .attr('fill', d => colorMap[d.type] || '#999')
+    .attr('stroke', '#fff')
+    .attr('stroke-width', 2.5)
+    .on('click', (event, d) => {
+      event.stopPropagation();
+      selectSample(d);
+    })
+    .on('mouseover', showTooltip)
+    .on('mouseout',  hideTooltip);
+
+  // Label
+  nodeElements.append('text')
+    .attr('class', 'tree-label')
+    .attr('dy', -20)
+    .attr('text-anchor', 'middle')
+    .text(d => d.id);
+
+  //  Tick 
+  simulation.on('tick', () => {
+    linkElements
+      .attr('x1', d => d.source.x)
+      .attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x)
+      .attr('y2', d => d.target.y);
+
+    nodeElements.attr('transform', d => `translate(${d.x}, ${d.y})`);
+  });
+
+  // Click canvas to deselect
+  treeSvg.on('click', () => {
+    if (selectedSample) {
+      treeGroup.selectAll('.tree-node circle:nth-child(2)')
+        .attr('stroke', '#fff').attr('stroke-width', 2.5);
+      treeGroup.selectAll('.tree-link').classed('highlighted', false);
+      selectedSample = null;
+    }
+  });
+
+  updateVisibility();
+}
+
+// DRAG HELPERS
+function dragstarted(event, d) {
+  if (!event.active) simulation.alphaTarget(0.3).restart();
+  d.fx = d.x; d.fy = d.y;
+}
+function dragged(event, d) {
+  d.fx = event.x; d.fy = event.y;
+}
+function dragended(event, d) {
+  if (!event.active) simulation.alphaTarget(0);
+  d.fx = null; d.fy = null;
+}
+
+// TIMELINE
+function updateTimeline() {
+  const daysFromStart = parseInt(slider.value);
+  currentDate = new Date(startDate);
+  currentDate.setDate(currentDate.getDate() + daysFromStart);
+  document.getElementById('currentDateDisplay').textContent = formatDate(currentDate);
+  updateVisibility();
+  updateStats();
+}
+
+function updateVisibility() {
+  treeGroup.selectAll('.tree-node').each(function(d) {
+    const visible = d.timestamp <= currentDate;
+    d3.select(this).classed('hidden', !visible);
+    if (visible) {
+      const age = getAgeInDays(d.timestamp, currentDate);
+      d3.select(this).style('opacity', getOpacityForAge(age));
+    }
+  });
+
+  treeGroup.selectAll('.tree-link').each(function(d) {
+    const srcVisible = d.source.timestamp <= currentDate;
+    const tgtVisible = d.target.timestamp <= currentDate;
+    d3.select(this).classed('hidden', !(srcVisible && tgtVisible));
+  });
+}
+
+function updateStats() {
+  const visible = samples.filter(s => s.timestamp <= currentDate);
+  const thirtyAgo = new Date(currentDate);
+  thirtyAgo.setDate(thirtyAgo.getDate() - 30);
+  const newThisPeriod = visible.filter(s => s.timestamp >= thirtyAgo);
+  const activeFams = new Set(visible.map(s => s.family));
+
+  document.getElementById('visibleSamples').textContent  = visible.length;
+  document.getElementById('newSamplesCount').textContent = newThisPeriod.length;
+  document.getElementById('activeFamilies').textContent  = activeFams.size;
+  document.getElementById('totalSamples').textContent    = samples.length;
+}
+
+// SAMPLE SELECTION — sidebar detail panel
+function selectSample(sample) {
+  selectedSample = sample;
+
+  // Find all directly connected node IDs
+  const connectedIds = new Set([sample.id]);
+  treeGroup.selectAll('.tree-link').each(function(d) {
+    const srcId = typeof d.source === 'object' ? d.source.id : d.source;
+    const tgtId = typeof d.target === 'object' ? d.target.id : d.target;
+    if (srcId === sample.id) connectedIds.add(tgtId);
+    if (tgtId === sample.id) connectedIds.add(srcId);
+  });
+
+  // Dim nodes not in the connected set — focus mode
+  treeGroup.selectAll('.tree-node')
+    .classed('focus-dim', d => !connectedIds.has(d.id));
+
+  // Dim links not touching the selected node
+  treeGroup.selectAll('.tree-link')
+    .classed('focus-dim', d => {
+      const srcId = typeof d.source === 'object' ? d.source.id : d.source;
+      const tgtId = typeof d.target === 'object' ? d.target.id : d.target;
+      return srcId !== sample.id && tgtId !== sample.id;
+    })
+    .classed('highlighted', d => {
+      const srcId = typeof d.source === 'object' ? d.source.id : d.source;
+      const tgtId = typeof d.target === 'object' ? d.target.id : d.target;
+      return srcId === sample.id || tgtId === sample.id;
+    });
+
+  // Highlight selected node ring
+  treeGroup.selectAll('.tree-node circle:nth-child(2)')
+    .attr('stroke', '#fff')
+    .attr('stroke-width', 2.5);
+
+  treeGroup.selectAll('.tree-node')
+    .filter(d => d.id === sample.id)
+    .select('circle:nth-child(2)')
+    .attr('stroke', '#AD974F')
+    .attr('stroke-width', 5);
+
+  // Show the Back button
+  document.getElementById('backToAll').style.display = 'inline-block';
+
+  //  Basic fields 
+  document.getElementById('sampleId').textContent = sample.id;
+  document.getElementById('familyName').textContent = (sample.family === 'unknown' && unknownFamilyHint[sample.hash])
+    ? `unknown (possibly ${unknownFamilyHint[sample.hash]})`
+    : sample.family;
+  document.getElementById('classification').textContent =
+    sample.type ? sample.type.charAt(0).toUpperCase() + sample.type.slice(1) : '-';
+  document.getElementById('firstSeen').textContent = formatDate(sample.timestamp);
+
+  const ageFromToday = getAgeInDays(sample.timestamp, today);
+  document.getElementById('sampleAge').textContent =
+    ageFromToday <= 0 ? 'New today' : `${ageFromToday} days ago`;
+
+  document.getElementById('sampleHash').textContent = sample.hash;
+
+  const reportBtn = document.getElementById('viewReportBtn');
+  reportBtn.href = `/report?hash=${encodeURIComponent(sample.hash)}`;
+  reportBtn.style.display = 'block';
+  document.getElementById('sampleConfidence').textContent =
+    sample.confidence !== undefined ? `${(sample.confidence * 100).toFixed(0)}%` : '-';
+
+  //  MITRE technique badges 
+  const badgeContainer = document.getElementById('techniqueBadges');
+  if (sample.techniques && sample.techniques.length > 0) {
+    badgeContainer.innerHTML = sample.techniques.map(tid => {
+      const t = techniques[tid];
+      const color = t ? t.color : '#999';
+      const name  = t ? t.name  : tid;
+      return `<span class="technique-badge" style="border-left: 3px solid ${color}; padding-left: 6px;" title="${name}">${tid}: ${name}</span>`;
+    }).join('');
+  } else {
+    badgeContainer.innerHTML = '<span style="color: #999; font-size: 0.9em;">No techniques mapped</span>';
+  }
+
+  //  Function list 
+  const funcList = document.getElementById('functionList');
+  if (sample.functions && sample.functions.length > 0) {
+    funcList.innerHTML = sample.functions.map(func =>
+      `<li class="function-item">${func}</li>`
+    ).join('');
+  } else {
+    funcList.innerHTML = '<li style="color: #999; text-align: center; padding: 10px;">No function data</li>';
+  }
+
+  //  Related samples (function similarity from DB) 
+  const related = functionSimilarity[sample.hash] || {};
+  const threshold = parseFloat(document.getElementById('similarityThreshold').value);
+
+  const relatedByFunction = Object.entries(related)
+    .filter(([id, sim]) => sim >= threshold)
+    .sort((a, b) => b[1] - a[1]);
+
+  // Also gather technique-related samples not already in function list
+  const funcRelatedIds = new Set(relatedByFunction.map(([id]) => id));
+  const relatedByTechnique = samples
+    .filter(s => s.id !== sample.id && !funcRelatedIds.has(s.hash) && !funcRelatedIds.has(s.id))
+    .map(s => ({ sample: s, sharedTechs: sharedTechniqueCount(sample, s) }))
+    .filter(r => r.sharedTechs > 0)
+    .sort((a, b) => b.sharedTechs - a.sharedTechs);
+
+  const relatedList = document.getElementById('relatedSamples');
+
+  if (relatedByFunction.length === 0 && relatedByTechnique.length === 0) {
+    relatedList.innerHTML = '<li style="color: #999; text-align: center; padding: 20px;">No related samples above threshold</li>';
+  } else {
+    let html = '';
+
+    // Function similarity results
+    relatedByFunction.forEach(([id, similarity]) => {
+      const relSample = samples.find(s => s.id === id || s.hash === id);
+      if (!relSample) return;
+      const sharedFuncs = sample.functions.filter(f => relSample.functions.includes(f));
+      const daysDiff = Math.abs(getAgeInDays(sample.timestamp, relSample.timestamp));
+      const temporal  = daysDiff <= 30 ? `<span class="timestamp-badge">Within ${daysDiff}d</span>` : '';
+      const sharedT   = sharedTechniqueCount(sample, relSample);
+      html += `
+        <li class="related-sample-item" onclick="selectSampleById('${id}')">
+          <div><strong>${relSample.id}</strong> — ${relSample.family} ${temporal}</div>
+          <div class="sample-hash">${relSample.hash}</div>
+          <div class="shared-functions">
+            Shared functions: ${sharedFuncs.length}/${sample.functions.length}
+            (${(similarity * 100).toFixed(0)}% similar)
+            ${sharedT > 0 ? `· <span style="color:#7b5ea7">${sharedT} shared technique${sharedT > 1 ? 's' : ''}</span>` : ''}
+          </div>
+          <div class="similarity-indicator">
+            <div class="similarity-bar">
+              <div class="similarity-fill" style="width: ${similarity * 100}%"></div>
+            </div>
+          </div>
+        </li>`;
+    });
+
+    // Technique-only results
+    relatedByTechnique.slice(0, 5).forEach(({ sample: relSample, sharedTechs }) => {
+      html += `
+        <li class="related-sample-item" onclick="selectSampleById('${relSample.id}')" style="border-left: 3px solid #7b5ea7;">
+          <div><strong>${relSample.id}</strong> — ${relSample.family}</div>
+          <div class="sample-hash">${relSample.hash}</div>
+          <div class="shared-functions" style="color: #7b5ea7;">
+            ${sharedTechs} shared MITRE technique${sharedTechs > 1 ? 's' : ''} (no function overlap)
+          </div>
+        </li>`;
+    });
+
+    relatedList.innerHTML = html;
+  }
+
+  //  Technique overlap breakdown 
+  const overlapSection = document.getElementById('techniqueOverlapSection');
+  const overlapList    = document.getElementById('techniqueOverlapList');
+
+  const allRelated = [
+    ...relatedByFunction.map(([id]) => samples.find(s => s.id === id || s.hash === id)).filter(Boolean),
+    ...relatedByTechnique.map(r => r.sample)
+  ];
+
+  if (sample.techniques && sample.techniques.length > 0 && allRelated.length > 0) {
+    overlapSection.style.display = '';
+    const techCount = {};
+    sample.techniques.forEach(tid => {
+      techCount[tid] = allRelated.filter(s => (s.techniques || []).includes(tid)).length;
+    });
+    overlapList.innerHTML = sample.techniques.map(tid => {
+      const t     = techniques[tid];
+      const count = techCount[tid] || 0;
+      const pct   = allRelated.length > 0 ? (count / allRelated.length) * 100 : 0;
+      return `
+        <div style="margin-bottom: 8px;">
+          <div style="display:flex; justify-content:space-between; font-size:0.82em;">
+            <span style="color:${t ? t.color : '#999'}">${tid}</span>
+            <span style="color:#666">${count}/${allRelated.length} related samples</span>
+          </div>
+          <div class="similarity-bar" style="margin-top:3px;">
+            <div class="similarity-fill" style="width:${pct}%; background:${t ? t.color : '#AD974F'}"></div>
+          </div>
+        </div>`;
+    }).join('');
+  } else {
+    overlapSection.style.display = 'none';
+  }
+}
+
+function selectSampleById(id) {
+  const sample = samples.find(s => s.id === id || s.hash === id);
+  if (sample) selectSample(sample);
+}
+
+// TOOLTIP
+function showTooltip(event, d) {
+  const tooltip = document.getElementById('tooltip');
+  const age     = getAgeInDays(d.timestamp, currentDate);
+  const techStr = (d.techniques || []).slice(0, 4).join(', ') + (d.techniques.length > 4 ? '…' : '');
+
+  tooltip.style.display = 'block';
+  tooltip.style.left    = (event.pageX + 12) + 'px';
+  tooltip.style.top     = (event.pageY - 12) + 'px';
+  tooltip.innerHTML = `
+    <strong>${d.id}</strong><br>
+    Family: ${d.family === 'unknown' && unknownFamilyHint[d.hash]
+      ? `unknown <span style="color:#bc8cff">(possibly ${unknownFamilyHint[d.hash]})</span>`
+      : d.family}<br>
+    Type: ${d.type}<br>
+    First Seen: ${formatDate(d.timestamp)}<br>
+    Age: ${age} days<br>
+    Confidence: ${d.confidence !== undefined ? (d.confidence * 100).toFixed(0) + '%' : '-'}<br>
+    Techniques: ${techStr || 'none'}<br>
+    Functions: ${(d.functions || []).length}
+  `;
+}
+
+function hideTooltip() {
+  document.getElementById('tooltip').style.display = 'none';
+}
+
+// EVENT LISTENERS
+slider.addEventListener('input', updateTimeline);
+
+// SEARCH: find by hash/id or family name and highlight matches
+const searchInput = document.getElementById('graphSearchInput');
+const searchBtn   = document.getElementById('graphSearchBtn');
+const clearBtn    = document.getElementById('graphClearSearchBtn');
+
+function performSearch() {
+  const q = (searchInput.value || '').trim();
+  if (!q) return clearSearch();
+
+  const qLower = q.toLowerCase();
+  // Determine matching nodes: exact/substring match on id or hash, or family match
+  const matched = new Set();
+  let matchedFamily = null;
+  // prefer exact family match if present
+  const famCandidate = families.find(f => f.toLowerCase() === qLower);
+  if (famCandidate) matchedFamily = famCandidate;
+
+  samples.forEach(s => {
+    if (matchedFamily) {
+      if (s.family === matchedFamily) matched.add(s.id);
+      return;
+    }
+    if ((s.id && s.id.toLowerCase().includes(qLower)) || (s.hash && s.hash.toLowerCase().includes(qLower))) {
+      matched.add(s.id);
+    }
+    // also allow family substring matches
+    if (s.family && s.family.toLowerCase().includes(qLower)) matched.add(s.id);
+  });
+
+  // Apply visual highlighting: dim non-matches, highlight matches and their links
+  treeGroup.selectAll('.tree-node')
+    .classed('focus-dim', d => !matched.has(d.id))
+    .classed('focus-selected', d => matched.has(d.id));
+
+  treeGroup.selectAll('.tree-link')
+    .classed('focus-dim', d => {
+      const srcId = typeof d.source === 'object' ? d.source.id : d.source;
+      const tgtId = typeof d.target === 'object' ? d.target.id : d.target;
+      return !(matched.has(srcId) || matched.has(tgtId));
+    })
+    .classed('highlighted', d => {
+      const srcId = typeof d.source === 'object' ? d.source.id : d.source;
+      const tgtId = typeof d.target === 'object' ? d.target.id : d.target;
+      return matched.has(srcId) || matched.has(tgtId);
+    });
+
+  // If there is at least one match, show Back button. Only auto-select
+  // the sample when there is a single match; multiple matches should
+  // remain highlighted without entering focus mode.
+  const firstMatchId = matched.values().next().value;
+  if (firstMatchId) {
+    if (matched.size === 1) {
+      const smp = samples.find(s => s.id === firstMatchId);
+      if (smp) selectSample(smp);
+    } else {
+      // Show a simple summary in the sidebar when multiple matches
+      document.getElementById('sampleId').textContent = `${matched.size} matches`;
+      document.getElementById('familyName').textContent = matchedFamily || '-';
+      document.getElementById('classification').textContent = '-';
+      document.getElementById('firstSeen').textContent = '-';
+      document.getElementById('sampleAge').textContent = '-';
+      document.getElementById('sampleHash').textContent = '-';
+      document.getElementById('viewReportBtn').style.display = 'none';
+      document.getElementById('sampleConfidence').textContent = '-';
+      document.getElementById('techniqueBadges').innerHTML = '<span style="color: #999; font-size: 0.9em;">Multiple matches selected</span>';
+      document.getElementById('functionList').innerHTML = '<li style="color: #999; text-align: center; padding: 12px;">Multiple matches — click a node for details</li>';
+      document.getElementById('relatedSamples').innerHTML = '<li style="color: #999; text-align: center; padding: 12px;">Multiple matches — click a node for details</li>';
+    }
+    document.getElementById('backToAll').style.display = 'inline-block';
+  }
+}
+
+function clearSearch() {
+  searchInput.value = '';
+  treeGroup.selectAll('.tree-node').classed('focus-dim', false).classed('focus-selected', false);
+  treeGroup.selectAll('.tree-link').classed('focus-dim', false).classed('highlighted', false);
+  selectedSample = null;
+  document.getElementById('backToAll').style.display = 'none';
+  // restore opacity rules based on family filter / timeline
+  familyFilterEl.dispatchEvent(new Event('change'));
+}
+
+searchBtn.addEventListener('click', performSearch);
+clearBtn.addEventListener('click', clearSearch);
+searchInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') performSearch(); });
+
+
+document.getElementById('playTimeline').addEventListener('click', function() {
+  if (!isPlaying) {
+    isPlaying = true;
+    this.textContent = '⏸';
+    playInterval = setInterval(() => {
+      let v = parseInt(slider.value);
+      slider.value = v >= totalDays ? 0 : v + 30;
+      updateTimeline();
+    }, 100);
+  } else {
+    isPlaying = false;
+    this.textContent = '▶';
+    clearInterval(playInterval);
+  }
+});
+
+familyFilterEl.addEventListener('change', function() {
+  const family = this.value;
+  treeGroup.selectAll('.tree-node').style('opacity', d => {
+    if (family !== 'all' && d.family !== family) return 0.08;
+    if (d.timestamp > currentDate) return 0;
+    return getOpacityForAge(getAgeInDays(d.timestamp, currentDate));
+  });
+  treeGroup.selectAll('.tree-link').style('opacity', d => {
+    if (family === 'all') return null;
+    return (d.source.family === family || d.target.family === family) ? 0.7 : 0.04;
+  });
+
+});
+
+document.getElementById('linkTypeFilter').addEventListener('change', function() {
+  createFunctionTree();
+  updateVisibility();
+  if (selectedSample) selectSample(selectedSample);
+});
+
+document.getElementById('similarityThreshold').addEventListener('change', function() {
+  createFunctionTree();
+  updateVisibility();
+  if (selectedSample) selectSample(selectedSample);
+});
+
+function clearFocusMode() {
+  treeGroup.selectAll('.tree-node')
+    .classed('focus-dim', false)
+    .classed('focus-selected', false);
+  treeGroup.selectAll('.tree-link')
+    .classed('focus-dim', false)
+    .classed('highlighted', false);
+  treeGroup.selectAll('.tree-node circle:nth-child(2)')
+    .attr('stroke', '#fff').attr('stroke-width', 2.5);
+  selectedSample = null;
+  document.getElementById('backToAll').style.display = 'none';
+  updateVisibility();
+}
+
+document.getElementById('backToAll').addEventListener('click', function() {
+  clearFocusMode();
+  // Clear sidebar
+  document.getElementById('backToAll').style.display = 'none';
+  clearFocusMode();
+  document.getElementById('sampleId').textContent    = 'Click a sample';
+  document.getElementById('familyName').textContent  = '-';
+  document.getElementById('classification').textContent = '-';
+  document.getElementById('firstSeen').textContent   = '-';
+  document.getElementById('sampleAge').textContent   = '-';
+  document.getElementById('sampleHash').textContent  = '-';
+  document.getElementById('viewReportBtn').style.display = 'none';
+  document.getElementById('sampleConfidence').textContent = '-';
+  document.getElementById('techniqueBadges').innerHTML =
+    '<span style="color: #999; font-size: 0.9em;">Select a sample to view techniques</span>';
+  document.getElementById('functionList').innerHTML =
+    '<li style="color: #999; text-align: center; padding: 20px;">Select a sample</li>';
+  document.getElementById('relatedSamples').innerHTML =
+    '<li style="color: #999; text-align: center; padding: 20px;">Select a sample</li>';
+  document.getElementById('techniqueOverlapSection').style.display = 'none';
+});
+
+document.getElementById('resetView').addEventListener('click', function() {
+  document.getElementById('familyFilter').value       = 'all';
+  document.getElementById('similarityThreshold').value = '0';
+  document.getElementById('linkTypeFilter').value      = 'all';
+  slider.value = totalDays;
+
+  if (isPlaying) document.getElementById('playTimeline').click();
+
+  updateTimeline();
+
+  treeGroup.selectAll('.tree-node circle:nth-child(2)')
+    .attr('stroke', '#fff').attr('stroke-width', 2.5);
+  treeGroup.selectAll('.tree-link').classed('highlighted', false);
+
+  treeSvg.transition().duration(750).call(treeZoom.transform, d3.zoomIdentity);
+
+  createFunctionTree();
+  selectedSample = null;
+
+  document.getElementById('backToAll').style.display = 'none';
+  clearFocusMode();
+  document.getElementById('sampleId').textContent    = 'Click a sample';
+  document.getElementById('familyName').textContent  = '-';
+  document.getElementById('classification').textContent = '-';
+  document.getElementById('firstSeen').textContent   = '-';
+  document.getElementById('sampleAge').textContent   = '-';
+  document.getElementById('sampleHash').textContent  = '-';
+  document.getElementById('viewReportBtn').style.display = 'none';
+  document.getElementById('sampleConfidence').textContent = '-';
+  document.getElementById('techniqueBadges').innerHTML =
+    '<span style="color: #999; font-size: 0.9em;">Select a sample to view techniques</span>';
+  document.getElementById('functionList').innerHTML =
+    '<li style="color: #999; text-align: center; padding: 20px;">Select a sample</li>';
+  document.getElementById('relatedSamples').innerHTML =
+    '<li style="color: #999; text-align: center; padding: 20px;">Select a sample</li>';
+  document.getElementById('techniqueOverlapSection').style.display = 'none';
+});
+
+// Handle window resize
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    treeWidth  = treeContainer.clientWidth  || 800;
+    treeHeight = treeContainer.clientHeight || 600;
+    treeSvg.attr('width', treeWidth).attr('height', treeHeight);
+    if (simulation) {
+      simulation
+        .force('center', d3.forceCenter(treeWidth / 2, treeHeight / 2).strength(0.01))
+        .force('familyX', d3.forceX(d => {
+          const familyList = [...new Set(samples.map(s => s.family))];
+          const idx = familyList.indexOf(d.family);
+          const angle = (idx / familyList.length) * 2 * Math.PI - Math.PI / 2;
+          const radius = Math.min(treeWidth, treeHeight) * 0.38;
+          return treeWidth / 2 + Math.cos(angle) * radius;
+        }).strength(0.35))
+        .force('familyY', d3.forceY(d => {
+          const familyList = [...new Set(samples.map(s => s.family))];
+          const idx = familyList.indexOf(d.family);
+          const angle = (idx / familyList.length) * 2 * Math.PI - Math.PI / 2;
+          const radius = Math.min(treeWidth, treeHeight) * 0.38;
+          return treeHeight / 2 + Math.sin(angle) * radius;
+        }).strength(0.35))
+        .alpha(0.5).restart();
+    }
+  }, 150);
+});
+
+// INIT
+createFunctionTree();
+updateTimeline();
+</script>
+</body>
+</html>

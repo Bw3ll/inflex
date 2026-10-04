@@ -15,7 +15,7 @@
     <nav class="menu">
       <a href="/">Dashboard</a>
       <a href="/uploads">Uploads</a>
-      <a href="/search">Reports</a>
+      <a href="/search">Search Reports</a>
       <a href="/graph">Graphs</a>
       <a href="/settings">Settings</a>
     </nav>
@@ -30,7 +30,7 @@
       <div id="uploadBox" class="upload-box">
         <p class="text-gray-700 mb-2">Drag & Drop .exe Files Here</p>
         <button id="browseBtn" class="btn-primary mt-3">Browse Files</button>
-        <input type="file" id="fileInput" accept=".exe" multiple style="display:none"/>
+        <input type="file" id="fileInput" accept=".exe,.dll,.elf,.bin,.txt,.vbs,.vbe,.wsf,.wsh,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.pdf,.zip,.7z,.gz,.tar" multiple style="display:none"/>
       </div>
 
       <!-- File Table -->
@@ -52,8 +52,12 @@
       <!-- Submit Button -->
       <div class="mt-6 text-right">
         <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" id="capeCheckbox" class="w-4 h-4 cursor-pointer">
+          <input type="checkbox" id="capeCheckbox" class="w-4 h-4 cursor-pointer" {% if config.get('cape_enabled', False) %}checked{% endif %}>
           <span class="text-sm text-gray-700">Optional CAPEv2 analysis</span>
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" id="stegoCheckbox" class="w-4 h-4 cursor-pointer" {% if config.get('stego_enabled', True) %}checked{% endif %}>
+          <span class="text-sm text-gray-700">Optional Stego analysis</span>
         </label>
         <button id="submitBtn" class="btn-secondary px-6 py-2">
           Submit for Analysis
@@ -62,21 +66,80 @@
     </section>
   </div>
 
-  <!-- Loading Overlay -->
-  <div id="loadingOverlay" class="loading-overlay hidden">
-    <div class="flex flex-col items-center">
-      <div class="loading-spinner"></div>
-      <p class="mt-4 text-white font-semibold">Analyzing files, please wait...</p>
+  <!-- Loading Status Bar - doesn't block navigation -->
+  <div id="loadingStatusBar" class="loading-status-bar hidden">
+    <div class="flex items-center gap-3">
+      <div class="loading-spinner" style="width: 1.5rem; height: 1.5rem; border-width: 2px;"></div>
+      <span id="loadingStatusText">Analyzing files...</span>
+    </div>
+    <button id="closeStatusBar" class="text-gray-400 hover:text-white">&times;</button>
+  </div>
+
+  <!-- Password Modal -->
+  <div id="passwordModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+    <div class="bg-white p-6 rounded-lg shadow-lg max-w-md w-full mx-4">
+      <h3 class="text-lg font-bold mb-4">ZIP Password</h3>
+      <p class="mb-4">If the archive file (.zip or .7z) is password-protected, enter the password below. Leave empty if not protected:</p>
+      <input type="password" id="modalPassword" class="w-full px-3 py-2 border rounded mb-4" placeholder="Enter password (optional)" value="{{ config.get('default_zip_password', '') }}">
+      <div class="flex justify-end gap-2">
+        <button id="cancelPassword" class="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400">Skip</button>
+        <button id="confirmPassword" class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">OK</button>
+      </div>
     </div>
   </div>
 
- <script>
+  <script>
     const uploadBox = document.getElementById("uploadBox");
     const fileInput = document.getElementById("fileInput");
     const browseBtn = document.getElementById("browseBtn");
     const fileTableBody = document.querySelector("#fileTable tbody");
 
     let files = [];
+    let jobIds = []; // Track job IDs for polling
+    let pollingInterval = null;
+
+    // Load persisted job IDs on page load
+    function loadPersistedJobs() {
+      const saved = sessionStorage.getItem("pendingJobIds");
+      if (saved) {
+        try {
+          const data = JSON.parse(saved);
+          jobIds = data.jobIds || [];
+          files = data.files || [];
+
+          if (jobIds.length > 0) {
+            renderTable();
+            startPolling();
+          }
+        } catch (e) {
+          console.error("Error loading persisted jobs:", e);
+        }
+      }
+    }
+
+    // Save job IDs and files to sessionStorage
+    function persistJobs() {
+      sessionStorage.setItem("pendingJobIds", JSON.stringify({
+        jobIds: jobIds,
+        files: files.map(f => ({ name: f.name, size: f.size, type: f.type }))
+      }));
+    }
+
+    // Clear persisted jobs
+    function clearPersistedJobs() {
+      sessionStorage.removeItem("pendingJobIds");
+    }
+
+    // Start polling for job status
+    function startPolling() {
+      if (!pollingInterval && jobIds.length > 0) {
+        pollingInterval = setInterval(pollJobStatus, 2000);
+
+        document.getElementById("loadingStatusBar").classList.remove("hidden");
+        document.getElementById("loadingStatusBar").classList.add("visible");
+        document.getElementById("loadingStatusText").textContent = `Analyzing ${jobIds.length} file(s)...`;
+      }
+    }
 
     function renderTable() {
       fileTableBody.innerHTML = "";
@@ -93,6 +156,8 @@
       files.forEach((file, idx) => {
         const row = document.createElement("tr");
         row.className = "hover:bg-gray-50";
+        row.id = `file-row-${idx}`;
+
         row.innerHTML = `
           <td class="p-3">${idx + 1}</td>
           <td class="p-3">${file.name}</td>
@@ -102,6 +167,7 @@
             <button class="delete-btn" data-idx="${idx}">Delete</button>
           </td>
         `;
+
         fileTableBody.appendChild(row);
       });
 
@@ -109,15 +175,32 @@
         btn.addEventListener("click", e => {
           const idx = parseInt(e.target.dataset.idx);
           files.splice(idx, 1);
+
+          // if you delete a file that has a jobId index, remove it too
+          if (jobIds[idx]) jobIds.splice(idx, 1);
+
           renderTable();
+          persistJobs();
         });
       });
     }
 
     function handleFiles(selectedFiles) {
+      const allowedExtensions = [
+        ".bat", ".exe", ".dll", ".elf", ".bin", ".txt",
+        ".vbs", ".vbe", ".wsf", ".wsh",
+        ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".rtf", ".pdf", ".zip", ".7z", ".gz", ".tar"
+      ];
+
       const newFiles = [...selectedFiles].filter(file => {
-        if (!file.name.toLowerCase().endsWith(".exe")) {
-          alert(`Skipping ${file.name}: Only .exe files allowed`);
+        if (!file || typeof file.name !== 'string' || !(file instanceof File)) return false;
+
+        const fileName = file.name.toLowerCase();
+        const isAllowed = allowedExtensions.some(ext => fileName.endsWith(ext));
+
+        if (!isAllowed) {
+          alert(`Skipping ${file.name}: File type not allowed`);
           return false;
         }
         return true;
@@ -127,6 +210,114 @@
       renderTable();
     }
 
+    // Update row with progress
+    function updateRowWithProgress(idx, jobData) {
+      const row = document.getElementById(`file-row-${idx}`);
+      if (!row) return;
+
+      const stageLabel = jobData.stage_label || "Processing...";
+      const status = jobData.status;
+
+      let progressCell = row.querySelector(".progress-cell");
+
+      if (!progressCell) {
+        const actionCell = row.querySelector("td:last-child");
+        if (actionCell) {
+          actionCell.innerHTML = `
+            <div class="progress-cell">
+              <div class="flex items-center gap-2">
+                <div class="loading-spinner" style="width: 1rem; height: 1rem; border-width: 2px;"></div>
+                <span class="text-xs text-gray-600">${stageLabel}</span>
+              </div>
+            </div>
+          `;
+        }
+      } else {
+        const label = progressCell.querySelector(".text-gray-600");
+        if (label) label.textContent = stageLabel;
+      }
+
+      if (status === "completed" || status === "failed") {
+        const progressCell = row.querySelector(".progress-cell");
+        if (progressCell) {
+          const isError = status === "failed";
+          progressCell.innerHTML = `
+            <div class="text-xs ${isError ? 'text-red-600' : 'text-green-600'} font-semibold">
+              ${isError ? 'Failed' : 'Completed'}
+            </div>
+          `;
+        }
+      }
+    }
+
+    // Hide status bar function
+    function hideStatusBar() {
+      document.getElementById("loadingStatusBar").classList.remove("visible");
+      document.getElementById("loadingStatusBar").classList.add("hidden");
+    }
+
+    // Poll job status (REMOVES finished jobs from table)
+    async function pollJobStatus() {
+      if (jobIds.length === 0) return;
+
+      try {
+        const res = await fetch("/api/jobs/active");
+        const activeJobs = await res.json();
+
+        // Track finished jobs
+        let finishedIndexes = [];
+
+        for (let i = 0; i < jobIds.length; i++) {
+          const jobId = jobIds[i];
+          const job = activeJobs.find(j => j.job_id === jobId);
+
+          // If job is still active, update progress
+          if (job) {
+            updateRowWithProgress(i, job);
+
+            if (job.status === "completed" || job.status === "failed") {
+              finishedIndexes.push(i);
+            }
+          } else {
+            // If job is not returned anymore, assume it's done
+            finishedIndexes.push(i);
+          }
+        }
+
+        // Remove finished jobs from arrays (reverse order prevents index shifting bugs)
+        finishedIndexes.reverse().forEach(idx => {
+          files.splice(idx, 1);
+          jobIds.splice(idx, 1);
+        });
+
+        if (finishedIndexes.length > 0) {
+          renderTable();
+          persistJobs();
+        }
+
+        // Update status bar count
+        if (jobIds.length > 0) {
+          document.getElementById("loadingStatusText").textContent = `Analyzing ${jobIds.length} file(s)...`;
+        }
+
+        // If everything is finished
+        if (jobIds.length === 0) {
+          clearInterval(pollingInterval);
+          pollingInterval = null;
+
+          document.getElementById("loadingStatusText").textContent = "Analysis complete!";
+          clearPersistedJobs();
+
+          setTimeout(() => {
+            hideStatusBar();
+          }, 2000);
+        }
+
+      } catch (err) {
+        console.error("Error polling job status:", err);
+      }
+    }
+
     // Submit handler
     document.getElementById("submitBtn").addEventListener("click", async () => {
       if (files.length === 0) {
@@ -134,28 +325,87 @@
         return;
       }
 
-      // Get CAPEv2 checkbox state
+      const hasArchive = files.some(f =>
+        f.name.toLowerCase().endsWith('.zip') || f.name.toLowerCase().endsWith('.7z')
+      );
+
+      let password = '';
+
+      if (hasArchive) {
+        document.getElementById('passwordModal').classList.remove('hidden');
+
+        password = await new Promise((resolve) => {
+          document.getElementById('confirmPassword').onclick = () => {
+            const pwd = document.getElementById('modalPassword').value;
+            document.getElementById('passwordModal').classList.add('hidden');
+            resolve(pwd);
+          };
+
+          document.getElementById('cancelPassword').onclick = () => {
+            document.getElementById('passwordModal').classList.add('hidden');
+            resolve('');
+          };
+        });
+
+        if (!password) return;
+      }
+
       const capeEnabled = document.getElementById("capeCheckbox").checked;
+      const stegoEnabled = document.getElementById("stegoCheckbox").checked;
 
-      document.getElementById("loadingOverlay").classList.remove("hidden");
+      document.getElementById("loadingStatusBar").classList.remove("hidden");
+      document.getElementById("loadingStatusBar").classList.add("visible");
+      document.getElementById("loadingStatusText").textContent = `Analyzing ${files.length} file(s)...`;
 
-      const uploads = files.map(file => {
+      jobIds = [];
+
+      const uploads = files.map(async (file) => {
         const formData = new FormData();
         formData.append("file", file);
         formData.append("cape_analysis", capeEnabled);
-        return fetch("/api/upload", { method: "POST", body: formData })
-          .then(res => res.json())
-          .then(data => console.log("Uploaded:", data))
-          .catch(err => console.error("Upload error:", err));
+        formData.append("stego_analysis", stegoEnabled);
+        formData.append("password", password);
+
+        try {
+          const res = await fetch("/api/upload", { method: "POST", body: formData });
+          const data = await res.json();
+
+          if (!res.ok) {
+            alert(data.error || 'Upload failed');
+            return;
+          }
+
+          if (data.job_ids) {
+            jobIds.push(...data.job_ids);
+          } else if (data.job_id) {
+            jobIds.push(data.job_id);
+          }
+
+        } catch (err) {
+          console.error("Upload error:", err);
+          alert("Upload error: " + err.message);
+        }
       });
 
       try {
         await Promise.all(uploads);
-        window.location.href = "/";
+
+        persistJobs();
+        startPolling();
+
       } catch (err) {
         console.error("One or more uploads failed", err);
         alert("Some files failed to upload. Please check the console.");
-        document.getElementById("loadingOverlay").classList.add("hidden");
+        hideStatusBar();
+      }
+    });
+
+    // Close button handler
+    document.getElementById("closeStatusBar").addEventListener("click", () => {
+      hideStatusBar();
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
+        pollingInterval = null;
       }
     });
 
@@ -181,6 +431,9 @@
 
     // Initial render
     renderTable();
+
+    // Load any persisted jobs from previous navigation
+    loadPersistedJobs();
   </script>
 </body>
 </html>

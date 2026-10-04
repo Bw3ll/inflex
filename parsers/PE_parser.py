@@ -1,14 +1,215 @@
-# TODO: Look at Subparse (https://github.com/jstrosch/subparse/blob/main/parser/src/parsers/PEParser.py) for a starting
-#       point in building out this parser to get everything we need for the static analysis and create an output JSON
-#       with that information
+# Category	    What You Get	            Malware Use
+# PE headers    Machine, timestamps, flags	Packing, spoofing
+# Sections	    Entropy, sizes, names	    Packing, shellcode
+# Imports	    APIs called	                Capability mapping
+# Exports	    DLL exports	                Malware DLL behavior
+# TLS callbacks	Pre-entry execution	        Malware tricks
+# Resources	    Icons, embedded files	    Droppers, configs
+# Certificates	Signature info	            Signed malware
+# Overlay	    Extra appended data	        Hidden payloads
+# Load config	Security features	        Missing mitigations
 
 import pefile
 import os
 import json
 import hashlib
+import struct
+import dnfile 
 import re
 from datetime import datetime
 from pathlib import Path
+
+BITMAPFILEHEADER_SIZE = 14   # 'BM' + file_size(4) + reserved(4) + offset(4)
+BITMAPINFOHEADER_SIZE = 40   # standard DIB header size
+
+
+def _detect_resource_extension(data: bytes) -> str:
+    """Detect common file types based on magic bytes."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data.startswith(b"BM"):
+        return "bmp"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "gif"
+    if data.startswith(b"\x00\x00\x01\x00"):
+        return "ico"
+    if data.startswith(b"<?xml"):
+        return "xml"
+    if data.startswith(b"{") or data.startswith(b"["):
+        return "json"
+    
+    # Detect raw DIB (RT_BITMAP resource — no file header)
+    if len(data) >= 40:
+        hdr_size = struct.unpack_from("<I", data, 0)[0]
+        if hdr_size in (40, 52, 56, 108, 124, 12):
+            width  = abs(struct.unpack_from("<i", data, 4)[0])
+            height = abs(struct.unpack_from("<i", data, 8)[0])
+            if 1 <= width <= 65535 and 1 <= height <= 65535:
+                return "dib"
+            
+    if len(data) > 40:
+        header_size = int.from_bytes(data[0:4], "little")
+        if header_size in (40, 108, 124):  # BITMAPINFOHEADER, V4, V5
+            return "dib"
+
+    return "bin"
+
+
+class SimpleCarver:
+    """
+    Safe, defensive carver: only carves common formats with clear signatures.
+    No XOR brute forcing, no recursive unpacking.
+    """
+
+    def __init__(self, max_size=50_000_000):
+        self.max_size = max_size
+
+    def carve_all(self, data: bytes, out_dir: str, prefix="carved"):
+        os.makedirs(out_dir, exist_ok=True)
+        results = []
+        results += self._carve_png(data, out_dir, prefix)
+        results += self._carve_jpeg(data, out_dir, prefix)
+        results += self._carve_gif(data, out_dir, prefix)
+        results += self._carve_pdf(data, out_dir, prefix)
+        results += self._carve_zip(data, out_dir, prefix)
+        return list(set(results))
+
+    def _carve_png(self, data, out_dir, prefix):
+        sig = b"\x89PNG\r\n\x1a\n"
+        results = []
+        pos = 0
+
+        while True:
+            start = data.find(sig, pos)
+            if start == -1:
+                break
+
+            end = self._parse_png_end(data, start)
+            if end:
+                blob = data[start:end]
+                out_path = os.path.join(out_dir, f"{prefix}_png_{start}.png")
+                with open(out_path, "wb") as f:
+                    f.write(blob)
+                results.append(out_path)
+
+            pos = start + 8
+
+        return results
+
+    def _parse_png_end(self, data, start):
+        pos = start + 8
+        while pos + 12 <= len(data):
+            if pos - start > self.max_size:
+                return None
+
+            length = struct.unpack(">I", data[pos:pos+4])[0]
+            chunk_type = data[pos+4:pos+8]
+
+            pos += 8
+            pos += length
+            pos += 4
+
+            if chunk_type == b"IEND":
+                return pos
+        return None
+
+    def _carve_jpeg(self, data, out_dir, prefix):
+        sig = b"\xff\xd8\xff"
+        results = []
+        pos = 0
+
+        while True:
+            start = data.find(sig, pos)
+            if start == -1:
+                break
+
+            end = data.find(b"\xff\xd9", start + 2)
+            if end != -1 and (end + 2 - start) <= self.max_size:
+                blob = data[start:end+2]
+                out_path = os.path.join(out_dir, f"{prefix}_jpg_{start}.jpg")
+                with open(out_path, "wb") as f:
+                    f.write(blob)
+                results.append(out_path)
+
+            pos = start + 3
+
+        return results
+
+    def _carve_gif(self, data, out_dir, prefix):
+        results = []
+        pos = 0
+
+        while True:
+            s1 = data.find(b"GIF89a", pos)
+            s2 = data.find(b"GIF87a", pos)
+
+            candidates = [x for x in [s1, s2] if x != -1]
+            if not candidates:
+                break
+
+            start = min(candidates)
+            trailer = data.find(b"\x3B", start + 6)
+
+            if trailer != -1 and (trailer + 1 - start) <= self.max_size:
+                blob = data[start:trailer+1]
+                out_path = os.path.join(out_dir, f"{prefix}_gif_{start}.gif")
+                with open(out_path, "wb") as f:
+                    f.write(blob)
+                results.append(out_path)
+
+            pos = start + 6
+
+        return results
+
+    def _carve_pdf(self, data, out_dir, prefix):
+        sig = b"%PDF"
+        results = []
+        pos = 0
+
+        while True:
+            start = data.find(sig, pos)
+            if start == -1:
+                break
+
+            end = data.find(b"%%EOF", start)
+            if end != -1:
+                end += len(b"%%EOF")
+                if (end - start) <= self.max_size:
+                    blob = data[start:end]
+                    out_path = os.path.join(out_dir, f"{prefix}_pdf_{start}.pdf")
+                    with open(out_path, "wb") as f:
+                        f.write(blob)
+                    results.append(out_path)
+
+            pos = start + 4
+
+        return results
+
+    def _carve_zip(self, data, out_dir, prefix):
+        sig = b"PK\x03\x04"
+        results = []
+        pos = 0
+
+        while True:
+            start = data.find(sig, pos)
+            if start == -1:
+                break
+
+            eocd = data.find(b"PK\x05\x06", start)
+            if eocd != -1:
+                end = eocd + 22
+                if (end - start) <= self.max_size:
+                    blob = data[start:end]
+                    out_path = os.path.join(out_dir, f"{prefix}_zip_{start}.zip")
+                    with open(out_path, "wb") as f:
+                        f.write(blob)
+                    results.append(out_path)
+
+            pos = start + 4
+
+        return results
 
 
 class PEStaticAnalyzer:
@@ -17,16 +218,18 @@ class PEStaticAnalyzer:
     Extracts maximum possible information from PE files.
     """
 
-    def __init__(self, pe_file_path):
+    def __init__(self, pe_file_path, output_dir="extracted_resources"):
         """
         Initialize the analyzer with a PE file path.
 
         Args:
             pe_file_path (str): Path to the PE file to analyze
+            output_dir (str): Directory where extracted resources will be written
         """
         self.pe_file_path = pe_file_path
         self.pe = None
         self.analysis_data = {}
+        self.output_dir = Path(output_dir)
 
     def load_pe(self):
         """Load the PE file using pefile library."""
@@ -349,44 +552,818 @@ class PEStaticAnalyzer:
         except Exception as e:
             print(f"Error extracting exports: {e}")
         return exports
+    
 
-    def get_resources(self):
-        """Extract detailed resource information."""
-        resources = []
+    def rebuild_bmp(self, dib_data: bytes) -> bytes:
+        """
+        Prepend a BITMAPFILEHEADER to raw DIB data to produce a valid .bmp file.
+
+        RT_BITMAP resources are stored as DIBs (no file header).
+        Most image tools (including PIL/Pillow) require the full BMP file format.
+        """
+        total_size = BITMAPFILEHEADER_SIZE + len(dib_data)
+
+        # Calculate pixel data offset:
+        # file_header(14) + info_header(variable) + color_table
+        info_header_size = struct.unpack_from("<I", dib_data, 0)[0]
+
+        # Colour table: only present for ≤8bpp images
+        bpp = struct.unpack_from("<H", dib_data, 14)[0] if len(dib_data) >= 16 else 0
+        num_colors = 0
+        if bpp <= 8:
+            # ClrUsed field at offset 32 in BITMAPINFOHEADER
+            if len(dib_data) >= 36:
+                num_colors = struct.unpack_from("<I", dib_data, 32)[0]
+            if num_colors == 0 and bpp > 0:
+                num_colors = 1 << bpp
+        color_table_size = num_colors * 4
+
+        pixel_data_offset = BITMAPFILEHEADER_SIZE + info_header_size + color_table_size
+
+        file_header = struct.pack(
+            "<2sIHHI",
+            b"BM",
+            total_size,
+            0,   # reserved1
+            0,   # reserved2
+            pixel_data_offset,
+        )
+        return file_header + dib_data
+    
+
+    def extract_and_rebuild_icons(self, output_dir="extracted_resources"):
+        """
+        Drop-in function:
+        - Extracts RT_ICON + RT_GROUP_ICON resources
+        - Rebuilds proper .ico files
+        - Saves them to output_dir/icons/
+        - Returns list of saved .ico paths
+        """
+        import os
+        import struct
+
+        RT_ICON = 3
+        RT_GROUP_ICON = 14
+
+        icons_out = os.path.join(output_dir, "icons")
+        os.makedirs(icons_out, exist_ok=True)
+
+        # --- Step 1: Collect all RT_ICON blobs by ID ---
+        icon_blobs = {}
+
+        if not hasattr(self.pe, "DIRECTORY_ENTRY_RESOURCE"):
+            return []
+
+        for resource_type in self.pe.DIRECTORY_ENTRY_RESOURCE.entries:
+            if not hasattr(resource_type, "directory"):
+                continue
+
+            if resource_type.id != RT_ICON:
+                continue
+
+            for resource_id in resource_type.directory.entries:
+                if not hasattr(resource_id, "directory"):
+                    continue
+
+                icon_id = resource_id.id
+
+                for resource_lang in resource_id.directory.entries:
+                    offset = resource_lang.data.struct.OffsetToData
+                    size = resource_lang.data.struct.Size
+
+                    blob = self.pe.get_data(offset, size)
+                    icon_blobs[icon_id] = blob
+
+        if not icon_blobs:
+            return []
+
+        # --- Step 2: Parse RT_GROUP_ICON and rebuild ICO files ---
+        saved_icons = []
+
+        for resource_type in self.pe.DIRECTORY_ENTRY_RESOURCE.entries:
+            if not hasattr(resource_type, "directory"):
+                continue
+
+            if resource_type.id != RT_GROUP_ICON:
+                continue
+
+            for resource_id in resource_type.directory.entries:
+                if not hasattr(resource_id, "directory"):
+                    continue
+
+                group_id = resource_id.id
+
+                for resource_lang in resource_id.directory.entries:
+                    offset = resource_lang.data.struct.OffsetToData
+                    size = resource_lang.data.struct.Size
+
+                    group_data = self.pe.get_data(offset, size)
+
+                    if len(group_data) < 6:
+                        continue
+
+                    # ICONDIR header: reserved(2), type(2), count(2)
+                    reserved, icon_type, count = struct.unpack("<HHH", group_data[:6])
+                    if icon_type != 1 or count <= 0:
+                        continue
+
+                    entries = []
+                    pos = 6
+
+                    # GROUP_ICON entries are 14 bytes each
+                    for _ in range(count):
+                        if pos + 14 > len(group_data):
+                            break
+
+                        (
+                            width,
+                            height,
+                            color_count,
+                            reserved2,
+                            planes,
+                            bit_count,
+                            bytes_in_res,
+                            icon_id
+                        ) = struct.unpack("<BBBBHHIH", group_data[pos:pos+14])
+
+                        entries.append({
+                            "width": width,
+                            "height": height,
+                            "color_count": color_count,
+                            "planes": planes,
+                            "bit_count": bit_count,
+                            "bytes_in_res": bytes_in_res,
+                            "icon_id": icon_id
+                        })
+
+                        pos += 14
+
+                    # Build ICO file
+                    ico_header = struct.pack("<HHH", 0, 1, len(entries))
+                    ico_dir_entries = b""
+                    ico_images = b""
+
+                    image_offset = 6 + (16 * len(entries))
+
+                    for entry in entries:
+                        icon_id = entry["icon_id"]
+
+                        if icon_id not in icon_blobs:
+                            continue
+
+                        img_data = icon_blobs[icon_id]
+
+                        w = entry["width"] if entry["width"] <= 255 else 0
+                        h = entry["height"] if entry["height"] <= 255 else 0
+
+                        # ICO dir entry is 16 bytes
+                        ico_dir_entries += struct.pack(
+                            "<BBBBHHII",
+                            w,
+                            h,
+                            entry["color_count"],
+                            0,
+                            entry["planes"],
+                            entry["bit_count"],
+                            len(img_data),
+                            image_offset
+                        )
+
+                        ico_images += img_data
+                        image_offset += len(img_data)
+
+                    if not ico_images:
+                        continue
+
+                    ico_data = ico_header + ico_dir_entries + ico_images
+
+                    out_path = os.path.join(icons_out, f"groupicon_{group_id}_lang{resource_lang.id}.ico")
+                    with open(out_path, "wb") as f:
+                        f.write(ico_data)
+
+                    saved_icons.append(out_path)
+
+        return saved_icons
+    
+
+    def extract_dotnet_bitmaps(self, output_dir="extracted_resources"):
+        """
+        Extract managed .NET manifest resources (.resources blobs),
+        then carve likely embedded image formats from them.
+
+        Works across dnfile versions where dn.net.resources may be:
+        - a list
+        - an object containing .manifest_resources
+        """
+        results = []
+
         try:
-            if hasattr(self.pe, 'DIRECTORY_ENTRY_RESOURCE'):
-                for resource_type in self.pe.DIRECTORY_ENTRY_RESOURCE.entries:
-                    if hasattr(resource_type, 'directory'):
-                        for resource_id in resource_type.directory.entries:
-                            if hasattr(resource_id, 'directory'):
-                                for resource_lang in resource_id.directory.entries:
-                                    data = self.pe.get_data(resource_lang.data.struct.OffsetToData,
-                                                            resource_lang.data.struct.Size)
-                                    res_data = {
-                                        'type': pefile.RESOURCE_TYPE.get(resource_type.id, str(resource_type.id)),
-                                        'id': resource_id.id,
-                                        'lang': resource_lang.id,
-                                        'sublang': resource_lang.id & 0x3F,
-                                        'size': resource_lang.data.struct.Size,
-                                        'offset': hex(resource_lang.data.struct.OffsetToData),
-                                        'md5': hashlib.md5(data).hexdigest(),
-                                        'entropy': self._calculate_entropy(data)
-                                    }
-                                    resources.append(res_data)
+            import dnfile
+        except ImportError:
+            print("[!] dnfile not installed. Run: pip install dnfile")
+            return results
+
+        try:
+            dn = dnfile.dnPE(self.pe_file_path)
+        except Exception as e:
+            print(f"[!] dnfile failed to parse .NET PE: {e}")
+            return results
+
+        if not dn.net:
+            return results
+
+        # --- Normalize resource list across dnfile versions ---
+        resources = None
+
+        if hasattr(dn.net, "resources"):
+            if isinstance(dn.net.resources, list):
+                resources = dn.net.resources
+            elif hasattr(dn.net.resources, "manifest_resources"):
+                resources = dn.net.resources.manifest_resources
+
+        if not resources:
+            return results
+
+        managed_dir = os.path.join(output_dir, "dotnet_managed")
+        blob_dir = os.path.join(managed_dir, "managed_resource_blobs")
+        carve_dir = os.path.join(managed_dir, "managed_resource_carved")
+
+        os.makedirs(blob_dir, exist_ok=True)
+        os.makedirs(carve_dir, exist_ok=True)
+
+        carver = SimpleCarver(max_size=100_000_000)
+
+        for res in resources:
+            try:
+                name = getattr(res, "Name", "unknown")
+                offset = getattr(res, "Offset", None)
+                size = getattr(res, "Size", None)
+
+                if offset is None or size is None:
+                    continue
+
+                blob = dn.get_data(offset, size)
+                if not blob:
+                    continue
+
+                safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+
+                out_path = os.path.join(blob_dir, f"{safe_name}.resources")
+                with open(out_path, "wb") as f:
+                    f.write(blob)
+
+                carved_files = carver.carve_all(blob, carve_dir, prefix=f"managed_{safe_name}")
+
+                results.append({
+                    "name": name,
+                    "size": len(blob),
+                    "saved_to": out_path,
+                    "carved_files": carved_files
+                })
+
+            except Exception as e:
+                results.append({
+                    "name": getattr(res, "Name", "unknown"),
+                    "error": str(e)
+                })
+
+        return results
+    
+
+    def extract_dotnet_managed_resources(self, output_dir="extracted_resources"):
+        """
+        Safe .NET managed resource extractor:
+        - Dumps manifest embedded .resources blobs
+        - Carves images/files from them (PNG/JPG/GIF/PDF/ZIP)
+        """
+        results = []
+
+        try:
+            dn = dnfile.dnPE(self.pe_file_path)
+            if not dn.net or not dn.net.resources or not dn.net.resources.manifest_resources:
+                return results
+
+            managed_dir = os.path.join(output_dir, "dotnet_managed")
+            blob_dir = os.path.join(managed_dir, "managed_resource_blobs")
+            carve_dir = os.path.join(managed_dir, "managed_resource_carved")
+
+            os.makedirs(blob_dir, exist_ok=True)
+            os.makedirs(carve_dir, exist_ok=True)
+
+            carver = SimpleCarver()
+
+            for res in dn.net.resources.manifest_resources:
+                try:
+                    name = res.Name or "unknown"
+                    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+
+                    if res.Offset is None or res.Size is None:
+                        continue
+
+                    blob = dn.get_data(res.Offset, res.Size)
+                    if not blob:
+                        continue
+
+                    out_path = os.path.join(blob_dir, f"{safe_name}.resources")
+                    with open(out_path, "wb") as f:
+                        f.write(blob)
+
+                    carved_files = carver.carve_all(blob, carve_dir, prefix=f"managed_{safe_name}")
+
+                    results.append({
+                        "name": name,
+                        "size": len(blob),
+                        "saved_to": out_path,
+                        "carved_files": carved_files
+                    })
+
+                except Exception as e:
+                    results.append({
+                        "name": getattr(res, "Name", "unknown"),
+                        "error": str(e)
+                    })
+
+        except Exception:
+            return results
+
+        return results
+    
+
+    def carve_overlay(self, output_dir="extracted_resources"):
+        """
+        Carve files from PE overlay data (appended payload region).
+        """
+        try:
+            overlay_offset = self.pe.get_overlay_data_start_offset()
+            if overlay_offset is None:
+                return []
+
+            with open(self.pe_file_path, "rb") as f:
+                f.seek(overlay_offset)
+                overlay_data = f.read()
+
+            carve_dir = os.path.join(output_dir, "carved_from_overlay")
+            os.makedirs(carve_dir, exist_ok=True)
+
+            carver = SimpleCarver()
+            return carver.carve_all(overlay_data, carve_dir, prefix="overlay")
+
+        except Exception:
+            return []
+        
+
+    def extract_rt_bitmap_resources(self, output_dir="extracted_resources", enable_carving=True):
+        """
+        Drop-in function to extract RT_BITMAP (DIB) resources from a PE file.
+
+        - Saves raw DIB as .dib
+        - Rebuilds into valid .bmp (adds BITMAPFILEHEADER)
+        - Optionally carves embedded payloads from the rebuilt BMP
+        - Returns list of extracted bitmap info dicts
+        """
+
+        import os
+        import struct
+        import hashlib
+
+        RT_BITMAP = 2
+        results = []
+
+        dib_dir = os.path.join(output_dir, "rt_bitmaps")
+        os.makedirs(dib_dir, exist_ok=True)
+
+        carve_dir = os.path.join(dib_dir, "carved_from_bitmaps")
+        if enable_carving:
+            os.makedirs(carve_dir, exist_ok=True)
+
+        carver = SimpleCarver(max_size=100_000_000)
+
+        if not hasattr(self.pe, "DIRECTORY_ENTRY_RESOURCE"):
+            return results
+
+        def rebuild_dib_to_bmp(dib_data: bytes) -> bytes:
+            """
+            Convert DIB (BITMAPINFOHEADER + pixel data) into BMP file bytes.
+            """
+            if len(dib_data) < 40:
+                raise ValueError("DIB too small to contain BITMAPINFOHEADER")
+
+            # DIB header size is first DWORD
+            header_size = struct.unpack("<I", dib_data[0:4])[0]
+            if header_size not in (40, 108, 124):
+                raise ValueError(f"Unexpected DIB header size: {header_size}")
+
+            # Extract important fields from BITMAPINFOHEADER
+            width = struct.unpack("<I", dib_data[4:8])[0]
+            height = struct.unpack("<I", dib_data[8:12])[0]
+            planes = struct.unpack("<H", dib_data[12:14])[0]
+            bpp = struct.unpack("<H", dib_data[14:16])[0]
+            compression = struct.unpack("<I", dib_data[16:20])[0]
+
+            # Determine where pixel data begins
+            # For many DIBs, pixel data begins right after header + palette (if any).
+            # If bpp <= 8, there is a palette of 4*(2^bpp) bytes.
+            palette_size = 0
+            if bpp in (1, 4, 8):
+                palette_size = (2 ** bpp) * 4
+
+            pixel_offset = 14 + header_size + palette_size
+            file_size = 14 + len(dib_data)
+
+            # BMP FILE HEADER (14 bytes)
+            bmp_file_header = struct.pack(
+                "<2sIHHI",
+                b"BM",
+                file_size,
+                0,
+                0,
+                pixel_offset
+            )
+
+            return bmp_file_header + dib_data
+
+        for resource_type in self.pe.DIRECTORY_ENTRY_RESOURCE.entries:
+            if not hasattr(resource_type, "directory"):
+                continue
+
+            if resource_type.id != RT_BITMAP:
+                continue
+
+            for resource_id in resource_type.directory.entries:
+                if not hasattr(resource_id, "directory"):
+                    continue
+
+                bmp_id = resource_id.id
+
+                for resource_lang in resource_id.directory.entries:
+                    try:
+                        offset = resource_lang.data.struct.OffsetToData
+                        size = resource_lang.data.struct.Size
+                        dib_data = self.pe.get_data(offset, size)
+
+                        if len(dib_data) < 40:
+                            continue
+
+                        # Save raw DIB
+                        dib_path = os.path.join(dib_dir, f"RT_BITMAP_id{bmp_id}_lang{resource_lang.id}_{offset}.dib")
+                        with open(dib_path, "wb") as f:
+                            f.write(dib_data)
+
+                        # Rebuild BMP
+                        bmp_bytes = rebuild_dib_to_bmp(dib_data)
+
+                        bmp_path = os.path.join(dib_dir, f"RT_BITMAP_id{bmp_id}_lang{resource_lang.id}_{offset}.bmp")
+                        with open(bmp_path, "wb") as f:
+                            f.write(bmp_bytes)
+
+                        # Carve inside BMP
+                        carved_files = []
+                        if enable_carving:
+                            carved_files = carver.carve_all(
+                                bmp_bytes,
+                                carve_dir,
+                                prefix=f"rtbitmap_id{bmp_id}_lang{resource_lang.id}"
+                            )
+
+                        results.append({
+                            "type": "RT_BITMAP",
+                            "id": bmp_id,
+                            "lang": resource_lang.id,
+                            "size": size,
+                            "offset": hex(offset),
+                            "md5": hashlib.md5(dib_data).hexdigest(),
+                            "entropy": self._calculate_entropy(dib_data),
+                            "dib_saved_to": dib_path,
+                            "bmp_saved_to": bmp_path,
+                            "carved_files": carved_files
+                        })
+
+                    except Exception as e:
+                        results.append({
+                            "type": "RT_BITMAP",
+                            "id": bmp_id,
+                            "lang": getattr(resource_lang, "id", None),
+                            "error": str(e)
+                        })
+
+        return results
+
+    
+    def carve_files_from_sections(self, output_dir="extracted_resources"):
+        """
+        Carve embedded PNG/BMP/ICO files directly from PE sections (like DIE does).
+        This detects magic headers inside raw section data and extracts them.
+        """
+
+        import os
+        import hashlib
+        import struct
+
+        # out_dir = os.path.join(output_dir, "carved_from_sections")
+        # os.makedirs(out_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        with open(self.pe_file_path, "rb") as f:
+            full_data = f.read()
+
+        results = []
+
+        def carve_png(start):
+            # parse PNG chunks until IEND
+            pos = start + 8
+            while pos + 12 < len(full_data):
+                length = struct.unpack(">I", full_data[pos:pos+4])[0]
+                ctype = full_data[pos+4:pos+8]
+                pos += 8 + length + 4
+                if ctype == b"IEND":
+                    return pos
+            return None
+
+        def carve_bmp(start):
+            if start + 6 > len(full_data):
+                return None
+            size = struct.unpack("<I", full_data[start+2:start+6])[0]
+            end = start + size
+            if end > len(full_data):
+                return None
+            return end
+
+        def carve_ico(start):
+            # ICO doesn't store full size in a simple place reliably
+            # We'll parse directory entries
+            if start + 6 > len(full_data):
+                return None
+
+            reserved, ico_type, count = struct.unpack("<HHH", full_data[start:start+6])
+            if reserved != 0 or ico_type != 1 or count <= 0:
+                return None
+
+            dir_end = start + 6 + (count * 16)
+            if dir_end > len(full_data):
+                return None
+
+            max_end = dir_end
+            pos = start + 6
+
+            for _ in range(count):
+                entry = full_data[pos:pos+16]
+                bytes_in_res = struct.unpack("<I", entry[8:12])[0]
+                img_offset = struct.unpack("<I", entry[12:16])[0]
+                img_end = start + img_offset + bytes_in_res
+                if img_end > max_end:
+                    max_end = img_end
+                pos += 16
+
+            if max_end > len(full_data):
+                return None
+
+            return max_end
+
+        signatures = [
+            (b"\x89PNG\r\n\x1a\n", "png", carve_png),
+            (b"BM", "bmp", carve_bmp),
+            (b"\x00\x00\x01\x00", "ico", carve_ico),
+        ]
+
+        for section in self.pe.sections:
+            sec_name = section.Name.decode("utf-8", errors="ignore").strip("\x00")
+            start = section.PointerToRawData
+            end = start + section.SizeOfRawData
+
+            if end > len(full_data):
+                continue
+
+            sec_bytes = full_data[start:end]
+
+            for sig, ext, parser in signatures:
+                pos = 0
+                while True:
+                    idx = sec_bytes.find(sig, pos)
+                    if idx == -1:
+                        break
+
+                    abs_offset = start + idx
+                    file_end = parser(abs_offset)
+
+                    if file_end and file_end > abs_offset:
+                        carved = full_data[abs_offset:file_end]
+
+                        md5 = hashlib.md5(carved).hexdigest()
+                        # out_path = os.path.join(out_dir, f"{sec_name}_{abs_offset:08x}_{md5}.{ext}")
+                        out_path = os.path.join(output_dir, f"{sec_name}_{abs_offset:08x}_{md5}.{ext}")
+
+                        with open(out_path, "wb") as f:
+                            f.write(carved)
+
+                        results.append({
+                            "section": sec_name,
+                            "offset": hex(abs_offset),
+                            "size": len(carved),
+                            "type": ext,
+                            "md5": md5,
+                            "saved_to": out_path
+                        })
+
+                    pos = idx + len(sig)
+
+        return results
+
+
+    def get_resources(self, output_dir="extracted_resources", enable_carving=True):
+        """
+        Extract detailed PE resource information, dump blobs to disk,
+        rebuild RT_BITMAP DIB resources into valid BMPs,
+        and carve embedded payloads (PE/ELF/ZIP/etc).
+        """
+
+        resources = []
+        carver = SimpleCarver()
+
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+
+            carve_dir = os.path.join(output_dir, "carved_from_resources")
+            if enable_carving:
+                os.makedirs(carve_dir, exist_ok=True)
+
+            if not hasattr(self.pe, "DIRECTORY_ENTRY_RESOURCE"):
+                return resources
+
+            for resource_type in self.pe.DIRECTORY_ENTRY_RESOURCE.entries:
+
+                if not hasattr(resource_type, "directory"):
+                    continue
+
+                for resource_id in resource_type.directory.entries:
+
+                    if not hasattr(resource_id, "directory"):
+                        continue
+
+                    for resource_lang in resource_id.directory.entries:
+
+                        offset = resource_lang.data.struct.OffsetToData
+                        size = resource_lang.data.struct.Size
+                        data = self.pe.get_data(offset, size)
+
+                        res_type = pefile.RESOURCE_TYPE.get(resource_type.id, str(resource_type.id))
+
+                        ext = _detect_resource_extension(data)
+
+                        saved_paths = []
+
+                        # --- Handle RT_BITMAP / DIB conversion ---
+                        if res_type == "RT_BITMAP" or ext == "dib":
+                            try:
+                                rebuilt_bmp = self.rebuild_bmp(data)
+                                bmp_filename = f"{res_type}_id{resource_id.id}_lang{resource_lang.id}_{offset}.bmp"
+                                bmp_path = os.path.join(output_dir, bmp_filename)
+
+                                with open(bmp_path, "wb") as f:
+                                    f.write(rebuilt_bmp)
+
+                                saved_paths.append(bmp_path)
+
+                                # Carve inside the rebuilt bitmap
+                                carved_files = []
+                                if enable_carving:
+                                    carved_files = carver.carve_all(
+                                        rebuilt_bmp,
+                                        carve_dir,
+                                        prefix=f"{res_type}_id{resource_id.id}_lang{resource_lang.id}"
+                                    )
+
+                                res_data = {
+                                    "type": res_type,
+                                    "id": resource_id.id,
+                                    "lang": resource_lang.id,
+                                    "sublang": resource_lang.id & 0x3F,
+                                    "size": size,
+                                    "offset": hex(offset),
+                                    "md5": hashlib.md5(data).hexdigest(),
+                                    "entropy": self._calculate_entropy(data),
+                                    "saved_to": bmp_path,
+                                    "rebuilt_from": "DIB",
+                                    "carved_files": carved_files
+                                }
+
+                                resources.append(res_data)
+                                continue
+
+                            except Exception as e:
+                                print(f"[!] Failed to rebuild DIB bitmap resource: {e}")
+
+                        # --- Normal saving for all other resources ---
+                        filename = f"{res_type}_id{resource_id.id}_lang{resource_lang.id}_{offset}.{ext}"
+                        out_path = os.path.join(output_dir, filename)
+
+                        with open(out_path, "wb") as f:
+                            f.write(data)
+
+                        saved_paths.append(out_path)
+
+                        carved_files = []
+                        if enable_carving:
+                            carved_files = carver.carve_all(
+                                data,
+                                carve_dir,
+                                prefix=f"{res_type}_id{resource_id.id}_lang{resource_lang.id}"
+                            )
+
+                        res_data = {
+                            "type": res_type,
+                            "id": resource_id.id,
+                            "lang": resource_lang.id,
+                            "sublang": resource_lang.id & 0x3F,
+                            "size": size,
+                            "offset": hex(offset),
+                            "md5": hashlib.md5(data).hexdigest(),
+                            "entropy": self._calculate_entropy(data),
+                            "saved_to": out_path,
+                            "carved_files": carved_files
+                        }
+
+                        resources.append(res_data)
+
         except Exception as e:
             print(f"Error extracting resources: {e}")
+
         return resources
 
     def _calculate_entropy(self, data):
-        """Calculate Shannon entropy of data."""
+        """Calculate Shannon entropy of data. Returns a value in [0.0, 8.0]."""
         if not data:
             return 0.0
-        entropy = 0
-        for x in range(256):
-            p_x = float(data.count(bytes([x]))) / len(data)
-            if p_x > 0:
-                entropy += - p_x * (p_x).bit_length()
-        return round(entropy, 4)
+        import math
+        from collections import Counter
+        counts = Counter(data)
+        total = len(data)
+        return round(
+            -sum((c / total) * math.log2(c / total) for c in counts.values()),
+            4,
+        )
+
+    @staticmethod
+    def _entropy_label(value: float) -> str:
+        """Human-readable tier for an entropy value."""
+        if value < 1.0:   return "near-zero"
+        if value < 3.5:   return "low"
+        if value < 6.0:   return "medium"
+        if value < 7.0:   return "elevated"
+        if value < 7.5:   return "high"
+        return "very-high"
+
+    def get_entropy_summary(self) -> dict:
+        """
+        Build a consolidated entropy picture across the whole file and its
+        sections. Called after get_sections() so section entropy is already
+        computed by pefile.
+
+        Returns a dict with:
+          file_entropy, file_entropy_label,
+          section_entropies (sorted high->low),
+          highest_entropy_section,
+          suspicious_sections (entropy >= 7.0),
+          mean_section_entropy,
+          packed_indicator (bool)
+        """
+        import math
+        from collections import Counter
+
+        try:
+            with open(self.pe_file_path, "rb") as f:
+                file_data = f.read()
+            file_entropy = self._calculate_entropy(file_data)
+        except Exception:
+            file_entropy = 0.0
+
+        section_entropies = []
+        for section in self.pe.sections:
+            name    = section.Name.decode("utf-8", errors="ignore").strip("\x00")
+            entropy = round(section.get_entropy(), 6)
+            size    = section.SizeOfRawData
+            section_entropies.append({
+                "name":          name,
+                "entropy":       entropy,
+                "entropy_label": self._entropy_label(entropy),
+                "size":          size,
+            })
+
+        section_entropies.sort(key=lambda x: x["entropy"], reverse=True)
+        suspicious = [s for s in section_entropies if s["entropy"] >= 7.0]
+        mean_entropy = (
+            round(sum(s["entropy"] for s in section_entropies) / len(section_entropies), 6)
+            if section_entropies else 0.0
+        )
+
+        return {
+            "file_entropy":            file_entropy,
+            "file_entropy_label":      self._entropy_label(file_entropy),
+            "section_entropies":       section_entropies,
+            "highest_entropy_section": section_entropies[0] if section_entropies else None,
+            "suspicious_sections":     suspicious,
+            "mean_section_entropy":    mean_entropy,
+            "packed_indicator":        len(suspicious) > 0,
+        }
 
     def get_tls_callbacks(self):
         """Extract TLS callback information (anti-debugging technique)."""
@@ -723,7 +1700,8 @@ class PEStaticAnalyzer:
             'emails': [],
             'registry_keys': [],
             'file_paths': [],
-            'crypto_indicators': []
+            'crypto_indicators': [],
+            'versions': []
         }
 
         # Patterns
@@ -739,9 +1717,10 @@ class PEStaticAnalyzer:
             urls = url_pattern.findall(s)
             interesting['urls'].extend(urls)
 
-            # IPs
+            # IPs (validate to exclude version numbers)
             ips = ip_pattern.findall(s)
-            interesting['ips'].extend(ips)
+            valid_ips = [ip for ip in ips if self._is_valid_ip(ip)]
+            interesting['ips'].extend(valid_ips)
 
             # Emails
             emails = email_pattern.findall(s)
@@ -761,11 +1740,29 @@ class PEStaticAnalyzer:
                     interesting['crypto_indicators'].append(s)
                     break
 
+            # Versions
+            version_matches = re.findall(r'\b\d+(?:\.\d+)+\b', s)
+            interesting['versions'].extend(version_matches)
+
         # Deduplicate and limit
         for key in interesting:
             interesting[key] = list(set(interesting[key]))[:100]  # Limit to 100 per category
 
         return interesting
+
+    @staticmethod
+    def _is_valid_ip(ip_str):
+        """Check if a string is a valid IPv4 address (each octet 0-255)."""
+        parts = ip_str.split('.')
+        if len(parts) != 4:
+            return False
+        for part in parts:
+            if not part.isdigit():
+                return False
+            num = int(part)
+            if not 0 <= num <= 255:
+                return False
+        return True
 
     def get_packer_signatures(self):
         """Attempt to detect common packers/protectors."""
@@ -856,6 +1853,7 @@ class PEStaticAnalyzer:
         print(f"[*] Analyzing: {self.pe_file_path}")
         print("[*] Extracting PE structure information...")
 
+        output_dir = str(self.output_dir)
         self.analysis_data = {
             'metadata': {
                 'timestamp': datetime.now().isoformat(),
@@ -873,7 +1871,10 @@ class PEStaticAnalyzer:
             'sections': self.get_sections(),
             'imports': self.get_imports(),
             'exports': self.get_exports(),
-            'resources': self.get_resources(),
+            'resources': self.get_resources(output_dir=output_dir, enable_carving=True),
+            'dotnet_managed_resources': self.extract_dotnet_managed_resources(output_dir=output_dir),
+            'overlay_carved_files': self.carve_overlay(output_dir=output_dir),
+            'carved_section_files': self.carve_files_from_sections(output_dir=output_dir),
             'tls_callbacks': self.get_tls_callbacks(),
             'load_config': self.get_load_config(),
             'debug_info': self.get_debug_info(),
@@ -886,8 +1887,41 @@ class PEStaticAnalyzer:
             'pe_warnings': self.get_pe_warnings(),
             'anomalies': self.detect_anomalies(),
             'packer_signatures': self.get_packer_signatures(),
-            'strings': self.extract_strings()
+            'strings': self.extract_strings(),
+            'entropy': self.get_entropy_summary(),
         }
+
+        # Filter out version numbers from IPs based on version_info
+        version_info = self.analysis_data['version_info']
+        version_strings = set()
+        for key, value in version_info.items():
+            if isinstance(value, str) and re.match(r'\b\d+(?:\.\d+)+\b', value):
+                version_strings.add(value)
+        self.analysis_data['strings']['interesting']['ips'] = [
+            ip for ip in self.analysis_data['strings']['interesting']['ips'] 
+            if ip not in version_strings
+        ]
+
+        self.extract_and_rebuild_icons(output_dir=output_dir)
+        self.analysis_data["dotnet_managed_resources"] = self.extract_dotnet_bitmaps(output_dir=output_dir)
+        self.analysis_data["rt_bitmaps"] = self.extract_rt_bitmap_resources(
+            output_dir=output_dir,
+            enable_carving=True
+        )
+
+
+        # Packing assessment — runs after all other fields are populated
+        # so it can draw on sections, imports, overlay, security_features, etc.
+        try:
+            from static_analysis.packing_detection import assess_packing_pe
+            self.analysis_data['packing'] = assess_packing_pe(self)
+            verdict = self.analysis_data['packing']['verdict']
+            confidence = self.analysis_data['packing']['confidence']
+            packers = self.analysis_data['packing']['packer_names']
+            print(f"[+] Packing assessment: {verdict} (confidence {confidence:.0%})"
+                  + (f" — {', '.join(packers)}" if packers else ""))
+        except ImportError:
+            print("[!] packing_detector.py not found — skipping packing assessment")
 
         print("[+] Analysis complete!")
         return self.analysis_data
@@ -958,9 +1992,9 @@ class PEStaticAnalyzer:
 
         # Save merged data to JSON
         try:
-            with open(report_path, 'w', encoding='utf-8') as f:
-                json.dump(merged_data, f, indent=2, ensure_ascii=False)
-            print(f"[+] Report saved to: {report_path}")
+            # with open(report_path, 'w', encoding='utf-8') as f:
+            #     json.dump(merged_data, f, indent=2, ensure_ascii=False)
+            # print(f"[+] Report saved to: {report_path}")
             return str(report_path)
         except Exception as e:
             print(f"[-] Error saving report: {e}")

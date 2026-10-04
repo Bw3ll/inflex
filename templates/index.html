@@ -1,5 +1,3 @@
-<!--TODO: Update dashboard to represent the actual point malware, benign, or errored out file-->
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -18,7 +16,7 @@
     <nav class="menu">
       <a href="/">Dashboard</a>
       <a href="/uploads">Uploads</a>
-      <a href="/search">Reports</a>
+      <a href="/search">Search Reports</a>
       <a href="/graph">Graphs</a>
       <a href="/settings">Settings</a>
     </nav>
@@ -27,6 +25,12 @@
   <!-- Main Content -->
   <div class="max-w-6xl mx-auto">
     <h1 class="text-2xl font-bold text-[#231F20] mb-4">Results Dashboard</h1>
+
+    <!-- Processing Jobs Section -->
+    <div id="processingSection" class="bg-white rounded-2xl shadow-lg p-6 mb-6 hidden">
+      <h2 class="font-bold text-lg mb-4 text-[#8E793E]">Processing</h2>
+      <ul id="processingList" class="divide-y divide-gray-200"></ul>
+    </div>
 
     <!-- Charts Grid -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
@@ -43,118 +47,155 @@
     <!-- Files List -->
     <div class="bg-white rounded-2xl shadow-lg p-6">
       <h2 class="font-bold text-lg mb-4 text-[#8E793E]">Files</h2>
-      <ul id="fileList" class="divide-y divide-gray-200"></ul>
+      <div class="mb-4 flex gap-2">
+        <button id="filter-all" class="px-3 py-1 rounded bg-[#231F20] text-white text-sm">All</button>
+        <button id="filter-clean" class="px-3 py-1 rounded bg-green-600 text-white text-sm">Clean</button>
+        <button id="filter-suspected" class="px-3 py-1 rounded bg-[#AD974F] text-white text-sm">Suspected</button>
+        <button id="filter-error" class="px-3 py-1 rounded bg-red-600 text-white text-sm">Error</button>
+      </div>
+      <ul id="fileList" class="divide-y divide-gray-200 max-h-[520px] overflow-y-auto"></ul>
     </div>
   </div>
 
   <script>
-    async function loadAndRender() {
+    let pieChartInstance = null;
+    let barChartInstance = null;
+
+    async function loadAndRender(filter = 'All') {
       try {
         const res = await fetch("/api/results");
         const items = await res.json();
 
-        const categoryCounts = { "Suspected": 0, "Clean": 0, "Error": 0 };
-        // Errors will come from checking if all the required fields are present or not
         const fileList = document.getElementById("fileList");
-        fileList.innerHTML = "";
-
         const REQUIRED_TOP_LEVEL_KEYS = [
           "ingest_analysis",
           "static_analysis",
-          "analysis_timestamps"
         ];
 
-        items.forEach(it => {
-          const extracted = it.extracted || it;
+        function renderItems(items, filter) {
+          fileList.innerHTML = "";
+          const counts = { "Suspected": 0, "Clean": 0, "Error": 0 };
 
-          // -------------------------------
-          // Top-level schema validation
-          // -------------------------------
-          const missingKeys = REQUIRED_TOP_LEVEL_KEYS.filter(
-            key => !(key in extracted)
-          );
+          // Sort by newest first (by ingest_analysis.timestamp or fallback to sha256)
+          items.sort((a, b) => {
+            const aTime = a.ingest_analysis?.ingest_timestamp || a.ingest_analysis?.sha256 || 0;
+            const bTime = b.ingest_analysis?.ingest_timestamp || b.ingest_analysis?.sha256 || 0;
+            return bTime > aTime ? 1 : bTime < aTime ? -1 : 0;
+          });
 
-          const hasSchemaError = missingKeys.length > 0;
+          items.forEach(it => {
+            const extracted = it.extracted || it;
 
-          // -------------------------------
-          // Hash + VT logic (only if valid)
-          // -------------------------------
-          // const sha = extracted.ingest_analysis?.sha256;
-          const sha = "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"; // test VT hash
-          const vt = extracted.threat_intel?.VirusTotal || {};
+            const missingKeys = REQUIRED_TOP_LEVEL_KEYS.filter(
+              key => !(key in extracted)
+            );
+            const hasSchemaError = missingKeys.length > 0;
 
-          let severity;
+            const sha = extracted.ingest_analysis?.sha256;
+            const vt = extracted.threat_intelligence?.VirusTotal || {};
 
-          if (hasSchemaError) {
-            severity = "Error";
-          } else {
-            const malicious =
-              sha && vt[sha]?.analysis_stats?.malicious
-                ? vt[sha].analysis_stats.malicious
-                : 0;
+            // Family label extraction (try normalized, then legacy)
+            let family = extracted.family?.identified_family
+              || extracted.threat_intelligence?.family?.identified_family
+              || extracted.threat_intelligence?.verdict?.family
+              || extracted.family
+              || "";
 
-            console.log("Malicious count for", sha, "is", malicious);
-            severity = malicious > 0 ? "Suspected" : "Clean";
-          }
+            let severity;
+            if (hasSchemaError) {
+              severity = "Error";
+            } else {
+              const malicious =
+                sha && vt[sha]?.analysis_stats?.malicious
+                  ? vt[sha].analysis_stats.malicious
+                  : 0;
+              severity = malicious > 0 ? "Suspected" : "Clean";
+            }
 
-          // -------------------------------
-          // Category counting
-          // -------------------------------
-          categoryCounts[severity] = (categoryCounts[severity] || 0) + 1;
+            counts[severity] = (counts[severity] || 0) + 1;
 
-          // -------------------------------
-          // UI rendering
-          // -------------------------------
-          const li = document.createElement("li");
-          li.className =
-            "py-3 px-2 flex justify-between items-center hover:bg-gray-50";
+            if (filter !== "All" && severity !== filter) {
+              return;
+            }
 
-          const left = document.createElement("div");
-          left.innerHTML = `
-            <div class="font-semibold text-[#231F20]">
-              ${extracted.ingest_analysis?.original_path || "unknown"}
-            </div>
-            <div class="text-sm ${
-              severity === "Error" ? "text-red-600" : "text-gray-600"
-            }">
-              ${
-                severity === "Error"
-                  ? `Schema error – missing: ${missingKeys.join(", ")}`
-                  : extracted.ingest_analysis?.sha256 || "no hash"
-              }
-            </div>
-          `;
+            const li = document.createElement("li");
+            li.className =
+              "py-3 px-2 flex justify-between items-center transition-colors " +
+              (severity === "Error"
+                ? "bg-red-50 border-l-4 border-red-400"
+                : severity === "Suspected"
+                ? "bg-yellow-50 border-l-4 border-yellow-400"
+                : "bg-green-50 border-l-4 border-green-400");
 
-          const right = document.createElement("div");
-
-          if (severity !== "Error") {
-            right.innerHTML = `
-              <a href="/report?hash=${extracted.ingest_analysis?.sha256}"
-                class="px-4 py-2 rounded bg-[#AD974F] text-white hover:bg-[#8E793E] transition-colors inline-block">
-                View Report
-              </a>
+            const left = document.createElement("div");
+            left.className = "flex-1 min-w-0";
+            left.innerHTML = `
+              <div class="font-semibold text-[#231F20] truncate flex items-center gap-2">
+                ${extracted.ingest_analysis?.original_path || "unknown"}
+                ${family && family !== "unknown" && family !== "" ? `<span class='ml-2 px-2 py-0.5 rounded bg-[#AD974F] text-white text-xs'>${family}</span>` : ""}
+              </div>
+              <div class="text-sm ${
+                severity === "Error" ? "text-red-600" : "text-gray-600"
+              } break-all">
+                ${
+                  severity === "Error"
+                    ? `Schema error – missing: ${missingKeys.join(", ")}`
+                    : extracted.ingest_analysis?.sha256 || "no hash"
+                }
+              </div>
             `;
-          } else {
+
+            const right = document.createElement("div");
+            right.className = "flex items-center flex-shrink-0 ml-3";
+
+            const badgeColor =
+              severity === "Error"
+                ? "bg-red-600"
+                : severity === "Suspected"
+                ? "bg-yellow-600"
+                : "bg-green-700";
+
             right.innerHTML = `
-              <span class="px-4 py-2 rounded bg-red-100 text-red-700 text-sm">
-                Invalid Sample
+              <span class="px-2 py-1 rounded text-white text-xs mr-2 ${badgeColor}">
+                ${severity}
               </span>
+              ${
+                severity !== "Error"
+                  ? `<a href="/report?hash=${extracted.ingest_analysis?.sha256}"
+                      class="px-3 py-1 rounded bg-[#AD974F] text-white hover:bg-[#8E793E] transition-colors inline-block">
+                        View Report
+                      </a>`
+                  : `<span class="px-3 py-1 rounded bg-red-100 text-red-700 text-sm">Invalid Sample</span>`
+              }
             `;
-          }
 
-          li.appendChild(left);
-          li.appendChild(right);
-          fileList.appendChild(li);
-        });
+            li.appendChild(left);
+            li.appendChild(right);
+            fileList.appendChild(li);
+          });
 
+          return counts;
+        }
+
+        const categoryCounts = renderItems(items, filter);
+
+        // Filter button hooks
+        document.getElementById("filter-all").onclick = () => loadAndRender("All");
+        document.getElementById("filter-clean").onclick = () => loadAndRender("Clean");
+        document.getElementById("filter-suspected").onclick = () => loadAndRender("Suspected");
+        document.getElementById("filter-error").onclick = () => loadAndRender("Error");
 
         // Build charts
         const pieLabels = Object.keys(categoryCounts);
         const pieData = Object.values(categoryCounts);
 
+        // DESTROY old charts before recreating (prevents duplication / overlay bug)
+        if (pieChartInstance) pieChartInstance.destroy();
+        if (barChartInstance) barChartInstance.destroy();
+
         // Pie Chart
         const pieCtx = document.getElementById("pieChart").getContext("2d");
-        new Chart(pieCtx, {
+        pieChartInstance = new Chart(pieCtx, {
           type: 'pie',
           data: {
             labels: pieLabels,
@@ -171,7 +212,7 @@
 
         // Bar Chart
         const barCtx = document.getElementById("barChart").getContext("2d");
-        new Chart(barCtx, {
+        barChartInstance = new Chart(barCtx, {
           type: 'bar',
           data: {
             labels: pieLabels,
@@ -191,12 +232,80 @@
             }
           }
         });
+
       } catch (err) {
         console.error("Error loading dashboard data:", err);
       }
     }
 
     loadAndRender();
+  </script>
+
+  <!-- Auto-refresh for processing jobs -->
+  <script>
+    let hadJobsLastPoll = false;
+
+    async function updateProcessingJobs() {
+      try {
+        const res = await fetch("/api/jobs/active");
+        if (!res.ok) throw new Error("API error");
+        const activeJobs = await res.json();
+
+        const section = document.getElementById("processingSection");
+        const list = document.getElementById("processingList");
+
+        if (!activeJobs || activeJobs.length === 0) {
+          // If we HAD jobs before but now we don't, refresh dashboard results
+          if (hadJobsLastPoll) {
+            loadAndRender();
+          }
+
+          hadJobsLastPoll = false;
+
+          if (!section.classList.contains("hidden")) {
+            section.classList.add("hidden");
+          }
+          return;
+        }
+
+        // Mark that we currently have active jobs
+        hadJobsLastPoll = true;
+
+        // Show section if there are active jobs
+        section.classList.remove("hidden");
+
+        // Render each active job
+        list.innerHTML = "";
+        activeJobs.forEach(job => {
+          const stageLabel = job.stage_label || "Processing...";
+          const filename = job.filename || "Unknown";
+
+          const li = document.createElement("li");
+          li.className = "py-3 px-2 bg-blue-50 border-l-4 border-blue-400";
+          li.innerHTML = `
+            <div class="flex justify-between items-center">
+              <div class="flex-1 min-w-0">
+                <div class="font-semibold text-[#231F20] truncate">${filename}</div>
+                <div class="flex items-center gap-2 text-sm text-blue-600">
+                  <div class="loading-spinner" style="width: 1rem; height: 1rem; border-width: 2px;"></div>
+                  <span>${stageLabel}</span>
+                </div>
+              </div>
+            </div>
+          `;
+          list.appendChild(li);
+        });
+
+      } catch (err) {
+        console.error("Error fetching active jobs:", err);
+      }
+    }
+
+    // Initial load
+    updateProcessingJobs();
+
+    // Poll every 2 seconds
+    setInterval(updateProcessingJobs, 2000);
   </script>
 </body>
 </html>

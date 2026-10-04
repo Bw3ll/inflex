@@ -18,7 +18,7 @@
     <nav class="menu">
       <a href="/">Dashboard</a>
       <a href="/uploads">Uploads</a>
-      <a href="/search">Reports</a>
+      <a href="/search">Search Reports</a>
       <a href="/graph">Graphs</a>
       <a href="/settings">Settings</a>
     </nav>
@@ -64,6 +64,37 @@
           </div>
         </div>
 
+        <!-- Ingest Details -->
+        <div class="bg-gray-50 rounded-lg p-4">
+          <h3 class="font-bold text-lg mb-3 text-[#231F20]">Ingest Details</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Extension</label>
+              <input type="text" id="advExtension" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="exe, dll, pdf">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">MIME Type</label>
+              <input type="text" id="advMimeType" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="application/x-msdownload">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Claimed Type</label>
+              <input type="text" id="advClaimedType" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Portable Executable (EXE)">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Detected Type</label>
+              <input type="text" id="advDetectedType" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Portable Executable (EXE)">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Submitted Filename</label>
+              <input type="text" id="advSubmittedFilename" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="0fd.exe">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">CAPE Type</label>
+              <input type="text" id="advCapeType" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="exe, dll">
+            </div>
+          </div>
+        </div>
+        
         <!-- PE Header Information -->
         <div class="bg-gray-50 rounded-lg p-4">
           <h3 class="font-bold text-lg mb-3 text-[#231F20]">PE Header</h3>
@@ -131,6 +162,47 @@
             <div>
               <label class="block text-sm font-semibold text-gray-700 mb-2">Import Hash (ImpHash)</label>
               <input type="text" id="advImpHash" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Enter imphash">
+            </div>
+          </div>
+        </div>
+
+        <!-- Dynamic Analysis -->
+        <div class="bg-gray-50 rounded-lg p-4">
+          <h3 class="font-bold text-lg mb-3 text-[#231F20]">Dynamic Analysis</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Malware Status</label>
+              <input type="text" id="advMalstatus" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Malicious, Clean">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Platform</label>
+              <input type="text" id="advPlatform" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="windows, linux">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Sandbox Machine</label>
+              <input type="text" id="advSandboxMachine" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="win10">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Malware Score Range</label>
+              <div class="flex gap-2">
+                <input type="number" id="advMalscoreMin" class="w-1/2 border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Min" step="0.1" min="0">
+                <input type="number" id="advMalscoreMax" class="w-1/2 border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Max" step="0.1" min="0">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Threat Intelligence -->
+        <div class="bg-gray-50 rounded-lg p-4">
+          <h3 class="font-bold text-lg mb-3 text-[#231F20]">Threat Intelligence</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Verdict</label>
+              <input type="text" id="advThreatVerdict" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Malicious, Clean, Suspicious">
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-gray-700 mb-2">Family</label>
+              <input type="text" id="advThreatFamily" class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="agenttesla, msil">
             </div>
           </div>
         </div>
@@ -390,6 +462,8 @@
         const maxEntropy = getMaxEntropy(item);
         const dllList = imports.map(i => i.dll).slice(0, 3).join(", ");
         const moreCount = imports.length > 3 ? ` +${imports.length - 3} more` : '';
+        const isExe = (ingest.extension || "").toLowerCase() === 'exe' || (basicInfo.file_type || "").toLowerCase().includes('exe');
+        const isDll = (ingest.extension || "").toLowerCase() === 'dll' || (basicInfo.file_type || "").toLowerCase().includes('dll');
 
         const div = document.createElement("div");
         div.className = "result-card cursor-pointer";
@@ -406,8 +480,8 @@
               </div>
             </div>
             <div class="flex gap-2">
-              ${basicInfo.is_exe ? '<span class="result-tag">EXE</span>' : ''}
-              ${basicInfo.is_dll ? '<span class="result-tag">DLL</span>' : ''}
+              ${isExe ? '<span class="result-tag">EXE</span>' : ''}
+              ${isDll ? '<span class="result-tag">DLL</span>' : ''}
             </div>
           </div>
 
@@ -461,23 +535,51 @@
 
         // Text search
         if (query) {
+          const stringsAscii = (staticAnalysis.strings?.ascii || []).slice(0, 30);
+          const stringsUnicode = (staticAnalysis.strings?.unicode || []).slice(0, 30);
+          const importFuncs = imports.flatMap(imp => imp.functions?.map(fn => fn.name) || []);
+          const network = item.dynamic_analysis?.network || {};
+          const verdictInfo = item.threat_intelligence?.verdict || {};
+          const familyInfo = item.threat_intelligence?.family || {};
+
           const searchText = [
+            ingest.original_path,
             ingest.filename,
-            basicInfo.filename,
+            ingest.extension,
+            ingest.claimed_type,
+            ingest.detected_type,
+            ingest.mime_type_guess,
+            ingest.submitted_filename,
+            ingest.cape_type,
             hashes.md5,
             hashes.sha1,
             hashes.sha256,
-            ...imports.map(i => i.dll)
-          ].join(' ').toLowerCase();
+            hashes.imphash,
+            basicInfo.filename,
+            basicInfo.file_type,
+            ...imports.map(i => i.dll),
+            ...importFuncs,
+            ...stringsAscii,
+            ...stringsUnicode,
+            ...(network.hosts || []),
+            ...(network.domains || []),
+            verdictInfo.verdict,
+            verdictInfo.override,
+            (verdictInfo.reasoning || []).join(' '),
+            familyInfo.identified_family,
+            ...(familyInfo.family_tokens || [])
+          ].filter(Boolean).join(' ').toLowerCase();
 
           if (!searchText.includes(query)) return false;
         }
 
         // File type filter
         if (typeChecked.length > 0) {
+          const isExe = (ingest.extension || "").toLowerCase() === 'exe' || (basicInfo.file_type || "").toLowerCase().includes('exe');
+          const isDll = (ingest.extension || "").toLowerCase() === 'dll' || (basicInfo.file_type || "").toLowerCase().includes('dll');
           const hasType = typeChecked.some(type => {
-            if (type === 'exe') return basicInfo.is_exe;
-            if (type === 'dll') return basicInfo.is_dll;
+            if (type === 'exe') return isExe;
+            if (type === 'dll') return isDll;
             return false;
           });
           if (!hasType) return false;
@@ -514,6 +616,12 @@
       const advMD5 = document.getElementById("advMD5").value.toLowerCase();
       const advSHA1 = document.getElementById("advSHA1").value.toLowerCase();
       const advSHA256 = document.getElementById("advSHA256").value.toLowerCase();
+      const advExtension = document.getElementById("advExtension").value.toLowerCase();
+      const advMimeType = document.getElementById("advMimeType").value.toLowerCase();
+      const advClaimedType = document.getElementById("advClaimedType").value.toLowerCase();
+      const advDetectedType = document.getElementById("advDetectedType").value.toLowerCase();
+      const advSubmittedFilename = document.getElementById("advSubmittedFilename").value.toLowerCase();
+      const advCapeType = document.getElementById("advCapeType").value.toLowerCase();
       const advMachine = document.getElementById("advMachine").value;
       const advSubsystem = document.getElementById("advSubsystem").value;
       const advSectionsMin = parseInt(document.getElementById("advSectionsMin").value) || 0;
@@ -525,6 +633,13 @@
       const advDLLName = document.getElementById("advDLLName").value.toLowerCase();
       const advFunctionName = document.getElementById("advFunctionName").value.toLowerCase();
       const advImpHash = document.getElementById("advImpHash").value.toLowerCase();
+      const advMalstatus = document.getElementById("advMalstatus").value.toLowerCase();
+      const advPlatform = document.getElementById("advPlatform").value.toLowerCase();
+      const advSandboxMachine = document.getElementById("advSandboxMachine").value.toLowerCase();
+      const advMalscoreMin = parseFloat(document.getElementById("advMalscoreMin").value);
+      const advMalscoreMax = parseFloat(document.getElementById("advMalscoreMax").value);
+      const advThreatVerdict = document.getElementById("advThreatVerdict").value.toLowerCase();
+      const advThreatFamily = document.getElementById("advThreatFamily").value.toLowerCase();
       const advStringSearch = document.getElementById("advStringSearch").value.toLowerCase();
       const advStringASCII = document.getElementById("advStringASCII").checked;
       const advStringUnicode = document.getElementById("advStringUnicode").checked;
@@ -541,6 +656,14 @@
         const imports = staticAnalysis.imports || [];
         const strings = staticAnalysis.strings || {};
         const security = staticAnalysis.security_features || {};
+
+        // Ingest filters
+        if (advExtension && !((ingest.extension || "").toLowerCase().includes(advExtension))) return false;
+        if (advMimeType && !(ingest.mime_type_guess || "").toLowerCase().includes(advMimeType)) return false;
+        if (advClaimedType && !(ingest.claimed_type || "").toLowerCase().includes(advClaimedType)) return false;
+        if (advDetectedType && !(ingest.detected_type || "").toLowerCase().includes(advDetectedType)) return false;
+        if (advSubmittedFilename && !(ingest.submitted_filename || "").toLowerCase().includes(advSubmittedFilename)) return false;
+        if (advCapeType && !(ingest.cape_type || "").toLowerCase().includes(advCapeType)) return false;
 
         // Hash filters
         if (advMD5 && hashes.md5?.toLowerCase() !== advMD5) return false;
@@ -589,6 +712,23 @@
           if (!hasDLL) return false;
         }
 
+        // Dynamic analysis filters
+        const sandbox = item.dynamic_analysis?.sandbox || {};
+        if (advMalstatus && !(sandbox.malstatus || "").toLowerCase().includes(advMalstatus)) return false;
+        if (advPlatform && !(sandbox.platform || "").toLowerCase().includes(advPlatform)) return false;
+        if (advSandboxMachine && !(sandbox.machine || "").toLowerCase().includes(advSandboxMachine)) return false;
+        if (!isNaN(advMalscoreMin) && advMalscoreMin !== undefined && advMalscoreMin !== null && advMalscoreMin !== "" && sandbox.malscore < advMalscoreMin) return false;
+        if (!isNaN(advMalscoreMax) && advMalscoreMax !== undefined && advMalscoreMax !== null && advMalscoreMax !== "" && sandbox.malscore > advMalscoreMax) return false;
+
+        // Threat intelligence filters
+        const verdictInfo = item.threat_intelligence?.verdict || {};
+        const familyInfo = item.threat_intelligence?.family || {};
+        if (advThreatVerdict && !((verdictInfo.verdict || "").toLowerCase().includes(advThreatVerdict) || (verdictInfo.override || "").toLowerCase().includes(advThreatVerdict))) return false;
+        if (advThreatFamily) {
+          const familyText = [familyInfo.identified_family, familyInfo.cluster_verdict, ...(familyInfo.family_tokens || [])].join(' ').toLowerCase();
+          if (!familyText.includes(advThreatFamily)) return false;
+        }
+
         // Function name filter
         if (advFunctionName) {
           const hasFunction = imports.some(imp =>
@@ -626,6 +766,12 @@
     }
 
     function resetAdvancedSearch() {
+      document.getElementById("advExtension").value = '';
+      document.getElementById("advMimeType").value = '';
+      document.getElementById("advClaimedType").value = '';
+      document.getElementById("advDetectedType").value = '';
+      document.getElementById("advSubmittedFilename").value = '';
+      document.getElementById("advCapeType").value = '';
       document.getElementById("advMD5").value = '';
       document.getElementById("advSHA1").value = '';
       document.getElementById("advSHA256").value = '';
@@ -640,6 +786,13 @@
       document.getElementById("advDLLName").value = '';
       document.getElementById("advFunctionName").value = '';
       document.getElementById("advImpHash").value = '';
+      document.getElementById("advMalstatus").value = '';
+      document.getElementById("advPlatform").value = '';
+      document.getElementById("advSandboxMachine").value = '';
+      document.getElementById("advMalscoreMin").value = '';
+      document.getElementById("advMalscoreMax").value = '';
+      document.getElementById("advThreatVerdict").value = '';
+      document.getElementById("advThreatFamily").value = '';
       document.getElementById("advStringSearch").value = '';
       document.getElementById("advStringASCII").checked = true;
       document.getElementById("advStringUnicode").checked = true;
@@ -702,6 +855,7 @@
     document.getElementById("searchBox").addEventListener("keypress", e => {
       if (e.key === "Enter") applyFilters();
     });
+    document.getElementById("searchBox").setAttribute("placeholder", "Search by hash, filename, DLL, keyword, family, verdict, path...");
 
     document.getElementById("minSize").addEventListener("input", applyFilters);
     document.getElementById("maxSize").addEventListener("input", applyFilters);

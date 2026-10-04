@@ -1,5 +1,3 @@
-<!--TODO: Add in option to download the source file for that reports page-->
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -8,6 +6,8 @@
   <title>File Analysis Report - INFLEX</title>
   <link rel="stylesheet" href="static/styles.css">
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
 <body class="bg-[#EAEAEA] min-h-screen p-6">
 
@@ -17,7 +17,7 @@
     <nav class="menu">
       <a href="/">Dashboard</a>
       <a href="/uploads">Uploads</a>
-      <a href="/search">Reports</a>
+      <a href="/search">Search Reports</a>
       <a href="/graph">Graphs</a>
       <a href="/settings">Settings</a>
     </nav>
@@ -32,6 +32,373 @@
   </div>
 
   <script>
+    /**
+     * Unified data accessor that works with both normalized and legacy formats
+     */
+    class ReportDataAccessor {
+      constructor(data) {
+        this.data = data;
+        this.isNormalized = !!data.format_type;
+      }
+
+      get formatType() {
+        const topFormat = this.data.format_type || '';
+        if (topFormat && topFormat.toUpperCase() !== 'UNKNOWN') {
+          return topFormat.toUpperCase();
+        }
+        return this._detectLegacyFormat();
+      }
+
+      _detectLegacyFormat() {
+        const static_analysis = this.data.static_analysis || {};
+        if (static_analysis.file_header || static_analysis.dos_header) return 'PE';
+        if (static_analysis.elf_header) return 'ELF';
+        if (this.data.static_analysis?.shellcode) return 'SHELLCODE';
+
+        const disasm = this.data.disassembly || this.data.static_analysis?.disassembly;
+        if (Array.isArray(disasm)) {
+          if (disasm.some(ins => String(ins?.annotation || '').toLowerCase().includes('shellcode'))) {
+            return 'SHELLCODE';
+          }
+          if (disasm.length > 0 && !static_analysis.file_header && !static_analysis.elf_header) {
+            return 'SHELLCODE';
+          }
+        }
+
+        return 'UNKNOWN';
+      }
+
+      get ingest() {
+        return this.data.ingest_analysis || {};
+      }
+
+      get staticAnalysis() {
+        return this.data.static_analysis || {};
+      }
+
+      get hashes() {
+        return this.staticAnalysis.hashes || this.data.hash || this.data.extracted?.hashes || {};
+      }
+
+      get basicInfo() {
+        const static_analysis = this.staticAnalysis;
+        const ingest = this.ingest;
+        
+        const filename = static_analysis.basic_info?.filename || ingest.filename || this.data.file_info?.name;
+        const file_size = static_analysis.basic_info?.file_size || ingest.size_bytes || this.data.file_info?.size;
+
+        return {
+          filename,
+          name: filename,
+          file_size,
+          size: file_size,
+          file_type: static_analysis.basic_info?.file_type || ingest.detected_type || this.data.file_info?.type,
+          path: ingest.original_path || this.data.file_info?.path,
+          mime_type: ingest.mime_type_guess || this.data.file_info?.mime_type,
+          magic: ingest.magic_header_hex || this.data.file_info?.magic,
+          extension: ingest.extension || this.data.file_info?.extension,
+          timestamp: ingest.ingest_timestamp || this.data.file_info?.timestamp
+        };
+      }
+
+      get sections() {
+        return this.staticAnalysis.sections || [];
+      }
+
+      get imports() {
+        const static_imports = this.staticAnalysis.imports || [];
+        const extracted_imports = this.data.extracted?.imports || [];
+        
+        // Flatten imports to function names
+        const importsList = (static_imports.length ? static_imports : extracted_imports);
+        return importsList.flatMap(item => {
+          // Normalized format: {library: "...", functions: [...]}
+          if (item.library && item.functions) {
+            return item.functions.map(fn => fn.name || fn);
+          }
+          // Legacy PE format: {dll: "...", functions: [...]}
+          if (item.dll && item.functions) {
+            return item.functions.map(fn => fn.name || fn);
+          }
+          return [];
+        }).filter(Boolean);
+      }
+
+      get symbols() {
+        return this.staticAnalysis.symbols || [];
+      }
+
+      get securityFeatures() {
+        return this.staticAnalysis.security_features || {};
+      }
+
+      get strings() {
+        const strings = this.staticAnalysis.strings;
+        if (strings) {
+          return strings.suspicious || strings.ascii || strings.unicode || strings.interesting || [];
+        }
+        return this.data.extracted?.strings || [];
+      }
+
+      get shellcode() {
+        if (this.staticAnalysis.shellcode) return this.staticAnalysis.shellcode;
+        if (this.formatType !== 'SHELLCODE') return null;
+
+        const static_disasm = this.data.static_analysis?.disassembly || [];
+        const top_disasm = Array.isArray(this.data.disassembly) ? this.data.disassembly : [];
+        const instructions = Array.isArray(top_disasm) && top_disasm.length ? top_disasm : static_disasm;
+        const rawhex = instructions.map(ins => (ins.bytes || '').replace(/\s+/g, '')).join('');
+        const strlit = instructions.map(ins => ins.ascii_repr || ins.ascii || '').filter(Boolean).join(' ');
+
+        return {
+          classification: this.data.ingest_analysis?.detected_type || this.data.ingest_analysis?.claimed_type || 'Shellcode',
+          classification_reason: this.data.ingest_analysis?.claimed_type || 'Detected shellcode via disassembly',
+          shellcode_hex: {
+            rawhex,
+            strlit
+          },
+          deobfuscation: {},
+          strings_detailed: { push_stack: [] },
+          indicators: {},
+          features_detected: []
+        };
+      }
+
+      get emulation() {
+        return this.data.threat_intelligence?.sharem_emulation || null;
+      }
+
+      get yaraMatches() {
+        let matches = this.staticAnalysis.yara_matches || this.data.extracted?.yara || [];
+
+        // Add from VirusTotal crowdsourced yara results
+        const sha = this.hashes.sha256;
+        if (sha && this.data.threat_intelligence?.VirusTotal?.[sha]?.crowdsourced_yara_results) {
+          const vtYara = this.data.threat_intelligence.VirusTotal[sha].crowdsourced_yara_results;
+          // Normalize to the same format
+          const normalizedVtYara = vtYara.map(item => ({
+            rule_name: item.rule_name,
+            description: item.description,
+            source: 'VirusTotal'
+          }));
+          matches = matches.concat(normalizedVtYara);
+        }
+
+        return matches;
+      }
+
+      get mitreMapping() {
+        console.log(this.data)
+        return this.data.threat_intelligence?.MITRE_ATTACK?.hits
+            || this.data.threat_intelligence?.MITRE_ATTACK
+            || {};
+      }
+
+      get virusTotal() {
+        const sha = this.hashes.sha256;
+        let vt = {};
+
+        // helper to unwrap entry if object contains hash keys
+        const unwrap = obj => {
+          if (!obj || typeof obj !== 'object') return obj;
+          if (obj.analysis_stats) return obj;
+          if (sha && obj[sha]) return obj[sha];
+          // fall back to first value that looks like a vt entry
+          for (const val of Object.values(obj)) {
+            if (val && typeof val === 'object' && val.analysis_stats) return val;
+          }
+          return obj;
+        };
+
+        // 1. try static_analysis field
+        vt = unwrap(this.staticAnalysis.virustotal);
+        if (vt && vt.analysis_stats) return vt;
+
+        // 2. legacy extracted field
+        vt = unwrap(this.data.extracted?.virustotal);
+        if (vt && vt.analysis_stats) return vt;
+
+        // 3. threat_intelligence map
+        if (sha && this.data.threat_intelligence?.VirusTotal) {
+          vt = unwrap(this.data.threat_intelligence.VirusTotal);
+          if (vt && vt.analysis_stats) return vt;
+        }
+
+        // nothing useful found
+        console.debug('virusTotal lookup failed for hash', sha, 'source data', this.staticAnalysis.virustotal, this.data.extracted?.virustotal, this.data.threat_intelligence);
+        return {};
+      }
+
+      get functions() {
+        // Check in disassembly section (legacy) or in static_analysis (normalized)
+        return this.data.disassembly?.functions || this.staticAnalysis.functions || [];
+      }
+
+      get functionCount() {
+        return this.staticAnalysis.function_count || this.data.disassembly?.function_count || this.functions.length;
+      }
+
+      get similarBinaries() {
+        return this.staticAnalysis.similar_binaries || this.data.disassembly?.similar_binaries || [];
+      }
+
+      get description() {
+        return this.data.description?.description || '';
+      }
+
+      get formatSpecific() {
+        return this.staticAnalysis.format_specific || {};
+      }
+
+      get verdict() {
+        return this.data.verdict || {};
+      }
+
+      get family() {
+        return this.data.family || {};
+      }
+
+      get dynamicAnalysis() {
+        return this.data.dynamic_analysis || null;
+      }
+    }
+
+    function escapeHTML(value) {
+      if (value === null || value === undefined) {
+        return '';
+      }
+
+      // Convert objects/arrays safely
+      let str;
+
+      if (typeof value === 'string') {
+        str = value;
+      } else if (
+        typeof value === 'number' ||
+        typeof value === 'boolean'
+      ) {
+        str = String(value);
+      } else {
+        try {
+          str = JSON.stringify(value, null, 2);
+        } catch {
+          str = String(value);
+        }
+      }
+
+      return str
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function formatDisassemblyText(disasm) {
+      if (!disasm) return '';
+      let funcs = [];
+      if (Array.isArray(disasm)) {
+        funcs = [{ instructions: disasm }];
+      } else {
+        funcs = disasm.functions || [];
+      }
+      if (!funcs.length) return '';
+
+      const fn = funcs[0];
+      const instrs = fn.instructions || fn.disassembly || [];
+      const lines = [];
+
+      for (const ins of instrs) {
+        const off = ins.offset || '';
+        const instr = (ins.instruction || '').padEnd(40, ' ');
+        const bytes = (ins.bytes || '').padEnd(24, ' ');
+        const ascii = ins.ascii_repr || ins.ascii || '';
+        lines.push(`${off} ${instr} ${bytes} ${ascii}`);
+        if (ins.annotation) {
+          lines.push(`     ; ${ins.annotation}`);
+        }
+        if (ins.call_args && ins.call_args.length) {
+          lines.push(`     ; (${ins.call_args.join(', ')})`);
+        }
+      }
+
+      return lines.join('\n');
+    }
+
+    function hideEmptyFields(root = document.getElementById('reportContent')) {
+      if (!root) return;
+
+      const elements = Array.from(root.querySelectorAll('*')).reverse();
+      for (const el of elements) {
+        if (el.id === 'reportFileName') continue;
+        if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE') continue;
+
+        const hasVisibleChild = Array.from(el.children).some(child => {
+          const style = window.getComputedStyle(child);
+          return style.display !== 'none' && style.visibility !== 'hidden' && child.offsetParent !== null;
+        });
+
+        const ownText = Array.from(el.childNodes).some(node =>
+          node.nodeType === Node.TEXT_NODE && node.textContent.trim().length > 0
+        );
+
+        if (!hasVisibleChild && !ownText) {
+          el.style.display = 'none';
+        }
+      }
+    }
+
+    async function downloadPdfReport(fileName = 'report') {
+      const reportContainer = document.getElementById('reportContent');
+      if (!reportContainer) return;
+
+      const clone = reportContainer.cloneNode(true);
+      const wrapper = document.createElement('div');
+      wrapper.style.position = 'fixed';
+      wrapper.style.top = '-9999px';
+      wrapper.style.left = '-9999px';
+      wrapper.style.width = '1200px';
+      wrapper.appendChild(clone);
+      document.body.appendChild(wrapper);
+
+      const canvas = await html2canvas(clone, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        logging: false
+      });
+
+      document.body.removeChild(wrapper);
+
+      const imgData = canvas.toDataURL('image/png');
+      const { jsPDF } = window.jspdf || {};
+      if (!jsPDF) {
+        alert('PDF export is unavailable because jsPDF failed to load.');
+        return;
+      }
+
+      const pdf = new jsPDF('p', 'pt', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const imgWidth = pageWidth;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      let position = 0;
+
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+
+      if (imgHeight > pageHeight) {
+        let heightLeft = imgHeight - pageHeight;
+        while (heightLeft > 0) {
+          position -= pageHeight;
+          pdf.addPage();
+          pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+          heightLeft -= pageHeight;
+        }
+      }
+
+      pdf.save(`${fileName}.pdf`);
+    }
+
     async function loadReport() {
       const params = new URLSearchParams(window.location.search);
       const hash = params.get("hash");
@@ -63,78 +430,159 @@
           return;
         }
 
-        // Extract data from new integrated format
-        const ingest = data.ingest_analysis || {};
-        const static_analysis = data.static_analysis || {};
-        const disassembly = data.disassembly || {};
+        
 
-        // Support both new integrated format and legacy format
-        const hashes = static_analysis.hashes || data.hash || data.extracted?.hashes || {};
-        const file_info = {
-          name: ingest.filename || data.file_info?.name,
-          path: ingest.original_path || data.file_info?.path,
-          size: static_analysis.basic_info?.file_size || ingest.size_bytes || data.file_info?.size,
-          type: ingest.detected_type || data.file_info?.type,
-          mime_type: ingest.mime_type_guess || data.file_info?.mime_type,
-          magic: ingest.magic_header_hex || data.file_info?.magic,
-          extension: ingest.extension || data.file_info?.extension,
-          timestamp: ingest.ingest_timestamp || data.file_info?.timestamp
-        };
+        // Use the unified accessor
+        const report = new ReportDataAccessor(data);
+        
+        const formatType = report.formatType;
+        const hashes = report.hashes;
+        const file_info = report.basicInfo;
+        const sections = data.static_analysis?.sections || [];
+        const imports = report.imports;
+        const symbols = report.symbols;
+        const security = report.securityFeatures;
+        const strings = report.strings;
+        console.log('report.strings:', report.strings);
+        const suspicious_strings = data.static_analysis?.strings?.interesting?.file_paths || [];  // this needs to be for all options
+        const yara = report.yaraMatches;
+        const mitreHits = data.threat_intelligence?.verdict?.hits || data.threat_intelligence?.MITRE_ATTACK?.hits || data.mitre || {};
+        console.log('report.threat_intelligence:', data.threat_intelligence?.MITRE_ATTACK?.hits);
+        console.log('mitreHits:', mitreHits);
+        const capaHits = mitreHits.capa || [];
+        console.log('capaHits:', capaHits);
+        const vt = report.virusTotal;
+        // vt should now be the entry with analysis_stats
+        const vt_status = vt.analysis_stats || vt.status || {};
+        const allFunctions = data.disassembly?.functions || [];
+        const ranked = data.disassembly?.function_scores?.ranked_functions || [];
 
-        const pe_structure = {
-          machine: static_analysis.file_header?.Machine?.decoded,
-          subsystem: static_analysis.optional_header?.Subsystem?.decoded,
-          sections: static_analysis.sections || [],
-          imports: static_analysis.imports || [],
-          security_features: static_analysis.security_features || {},
-          dos_header: static_analysis.dos_header || {},
-          file_header: static_analysis.file_header || {},
-          optional_header: static_analysis.optional_header || {}
-        };
+        // Map ranked by func_hash for fast lookup
+        const rankedMap = {};
+        ranked.forEach(r => {
+          if (r.func_hash) rankedMap[r.func_hash] = r;
+        });
 
-        // Legacy fields for backwards compatibility
-        const extracted = data.extracted || {};
-        const mitre = data.mitre || {};
-        const description = data.description || {};
+        // Merge enrichment into all functions
+        const functions = allFunctions.map(f => {
+          const enriched = rankedMap[f.func_hash];
+          if (enriched) {
+            return { ...f, ...enriched, is_suspicious: true };
+          }
+          return { ...f, is_suspicious: false };
+        });
+        const similarityList = data.disassembly?.similarity?.function_similarity || [];
+        // Build func_hash -> shared matches
+        const sharedMap = {};
 
-        // Import data - flatten the functions from each DLL
-        // const imports = (pe_structure.imports || []).flatMap(dll =>
-        //   (dll.functions || []).map(fn => fn.name || fn)
-        // );
-        // Try all possible locations for imports
-      let imports = [];
-      if (Array.isArray(data.static_analysis?.imports)) {
-        imports = data.static_analysis.imports.flatMap(dll =>
-          (Array.isArray(dll.functions) ? dll.functions : []).map(fn => fn.name || fn)
-        );
-      } else if (Array.isArray(data.extracted?.imports)) {
-        imports = data.extracted.imports.flatMap(dll =>
-          (Array.isArray(dll.functions) ? dll.functions : []).map(fn => fn.name || fn)
-        );
-      } else {
-        console.debug("No imports found in static_analysis or extracted", { data });
-      }
+        similarityList.forEach(sim => {
+          const shared = sim.shared_functions || [];
 
-        // Static analysis fields
-        const yara = static_analysis.yara_matches || extracted.yara || [];
-        const strings = static_analysis.strings?.suspicious || static_analysis.strings?.ascii || static_analysis.strings?.unicode || extracted.strings || [];
-        const vt = static_analysis.virustotal || extracted.virustotal || {};
-        const vt_status = vt.status || {};
+          shared.forEach(sf => {
+            const h = sf.func_hash;
+            if (!h) return;
 
-        // MITRE mapping
-        const mitre_map = static_analysis.mitre_mapping || mitre.mapping || {};
+            if (!sharedMap[h]) sharedMap[h] = [];
 
-        // Disassembly data
-        const functions = disassembly.functions || [];
-        const similar_binaries = disassembly.similar_binaries || [];
+            sharedMap[h].push({
+              binary_id: sim.binary_id,
+              similarity_score: sim.similarity_score,
+              overlap_pct_of_smaller: sim.overlap_pct_of_smaller,
+              shared_count: sim.shared_count,
+
+              name_in_match: sf.name_in_match,
+              offset_in_match: sf.offset_in_match,
+              name_in_new: sf.name_in_new,
+              offset_in_new: sf.offset_in_new,
+
+              // optional fields if you add later
+              matched_strings: sf.strings_referenced || [],
+              matched_techniques: sf.techniques || []
+            });
+          });
+        });
+
+        // Attach to each function
+        functions.forEach(f => {
+          f.corpus_matches = sharedMap[f.func_hash] || [];
+        });
+        const similar_binaries = report.similarBinaries;
+        const description = (report.description || '').trim();
+        const verdict = report.verdict;
+        const family = report.family;
+        const dynamic = report.dynamicAnalysis;
+        const packing = report.staticAnalysis.packing || {};
+
+        // Build format-specific sections
+        let formatSpecificSection = '';
+        const formatSpecific = report.formatSpecific;
+        
+        if (formatType === 'PE' && Object.keys(formatSpecific).length > 0) {
+          formatSpecificSection = buildPESpecificSection(formatSpecific);
+        } else if (formatType === 'ELF' && Object.keys(formatSpecific).length > 0) {
+          formatSpecificSection = buildELFSpecificSection(formatSpecific);
+        } else if (formatType === 'SHELLCODE') {
+          formatSpecificSection = buildShellcodeSection(report.shellcode, report.emulation, data);
+        }
+
+        if (Array.isArray(capaHits) && capaHits.length > 0) {
+          capaHits.forEach(hit => {
+            console.log(`Technique: ${hit.technique}, Tactic: ${hit.tactic}, Rule: ${hit.rule}, Confidence: ${hit.confidence}`);
+          });
+        } else {
+          console.log("No CAPA hits found");
+        }
 
         document.getElementById("reportContent").innerHTML = `
           <!-- File Overview -->
+          <div class="mb-4 flex flex-wrap gap-2">
+            <span class="inline-block px-3 py-1 rounded-full text-sm font-semibold ${
+              formatType === 'PE' ? 'bg-blue-100 text-blue-800' :
+              formatType === 'ELF' ? 'bg-green-100 text-green-800' :
+              formatType === 'OLE' ? 'bg-purple-100 text-purple-800' :
+              formatType === 'SHELLCODE' ? 'bg-red-100 text-red-800' :
+              'bg-gray-100 text-gray-800'
+            }">
+              ${formatType} File
+            </span>
+
+            ${verdict.verdict ? `
+            <span class="inline-block px-3 py-1 rounded-full text-sm font-semibold ${
+              verdict.verdict.toLowerCase() === 'malicious' ? 'bg-red-100 text-red-800' :
+              verdict.verdict.toLowerCase() === 'benign' ? 'bg-green-100 text-green-800' :
+              'bg-yellow-100 text-yellow-800'
+            }">
+              ${verdict.verdict}
+            </span>
+            ` : ''}
+
+            ${family.identified_family ? `
+            <span class="inline-block px-3 py-1 rounded-full text-sm font-semibold bg-purple-100 text-purple-800">
+              Family: ${family.identified_family}
+            </span>
+            ` : ''}
+
+            ${report.staticAnalysis?.packing?.verdict ? `
+            <span class="inline-block px-3 py-1 rounded-full text-sm font-semibold ${
+              report.staticAnalysis.packing.verdict.toLowerCase().includes("packed")
+                ? 'bg-red-100 text-red-800'
+                : 'bg-green-100 text-green-800'
+            }">
+              Packing: ${report.staticAnalysis.packing.verdict}
+              ${report.staticAnalysis.packing.confidence != null
+                ? ` (${Math.round(report.staticAnalysis.packing.confidence * 100)}%)`
+                : ''
+              }
+            </span>
+            ` : ''}
+          </div>
+
+           <!-- File Overview -->
           <div class="bg-white rounded-2xl shadow-lg p-6">
             <!-- Hidden filename for client-side download button -->
-            <span id="reportFileName" style="display:none">${file_info.name || 'here'}</span>
+            <span id="reportFileName" style="display:none">${file_info.filename || file_info.name || 'here'}</span>
             <h1 class="text-2xl font-bold text-[#231F20] mb-6">File Analysis Report</h1>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
+            <div class="grid grid-cols-1 md:grid-cols-1 gap-6 text-sm">
               <div class="space-y-2">
                 <p class="flex justify-between">
                   <span class="font-bold text-gray-700">MD5:</span>
@@ -153,61 +601,160 @@
                   <span class="font-bold text-gray-700">File Size:</span>
                   <span class="text-gray-600">${formatBytes(file_info.size)}</span>
                 </p>
-                ` : ''}
-              </div>
-              <div class="space-y-2">
-                <p>
-                  <span class="font-bold text-gray-700">VirusTotal:</span>
-                  ${vt.permalink
-                    ? `<a href="${vt.permalink}" target="_blank" class="text-[#AD974F] hover:text-[#8E793E] ml-2">View Report →</a>`
-                    : '<span class="text-gray-500 ml-2">Unknown</span>'}
-                </p>
-                <p>
-                  <span class="font-bold text-gray-700">Detections:</span>
-                  <span class="ml-2">
-                    <span class="font-bold text-red-600">${vt_status.malicious || 0}</span> malicious /
-                    <span class="text-gray-600">${vt_status.undetected || 0}</span> undetected
-                  </span>
-                </p>
-                ${pe_structure.machine ? `
+                ` : file_info.file_size ? `
                 <p class="flex justify-between">
-                  <span class="font-bold text-gray-700">Architecture:</span>
-                  <span class="text-gray-600">${pe_structure.machine}</span>
+                  <span class="font-bold text-gray-700">File Size:</span>
+                  <span class="text-gray-600">${formatBytes(file_info.file_size)}</span>
                 </p>
                 ` : ''}
               </div>
             </div>
           </div>
 
-          <!-- Similar Binaries (NEW) -->
-          ${similar_binaries.length ? `
+          <!-- Similar Files -->
+          ${Array.isArray(similarityList) && similarityList.length > 0 ? `
           <div class="bg-white rounded-2xl shadow-lg p-6">
-            <h2 class="text-xl font-bold text-[#8E793E] mb-4">⚠️ Similar Binaries Detected</h2>
-            <p class="text-sm text-gray-600 mb-4">This binary shares significant code similarity with the following files:</p>
-            <div class="space-y-3">
-              ${similar_binaries.map(sim => `
-                <div class="border-l-4 border-red-500 bg-red-50 pl-4 py-3 rounded">
-                  <div class="flex justify-between items-center">
-                    <div>
-                      <p class="font-mono text-xs text-gray-700 break-all">${sim.sha256}</p>
-                      <p class="text-xs text-gray-500 mt-1">${sim.file_path || 'Unknown path'}</p>
-                    </div>
-                    <div class="text-right ml-4">
-                      <span class="inline-block px-3 py-1 bg-red-600 text-white rounded-full text-xs font-bold">
-                        ${(sim.similarity * 100).toFixed(1)}% Match
-                      </span>
-                      <a href="/report?hash=${sim.sha256}" class="block text-xs text-[#AD974F] hover:text-[#8E793E] mt-1">
-                        View Report →
-                      </a>
-                    </div>
-                  </div>
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">
+              Similar Files Found (${similarityList.length})
+            </h2>
+
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-gray-50">
+                  <tr>
+                    <th class="px-4 py-2 text-left">File</th>
+                    <th class="px-4 py-2 text-left">SHA256</th>
+                    <th class="px-4 py-2 text-left">Similarity</th>
+                  </tr>
+                </thead>
+                <tbody class="font-mono text-xs">
+                  ${similarityList.map(s => {
+                    const simPct = (s.similarity_score != null)
+                      ? (s.similarity_score * 100).toFixed(1)
+                      : "N/A";
+
+                    const shaFromBinaryId = (s.binary_id && s.binary_id.includes("."))
+                      ? s.binary_id.split(".")[0]
+                      : (s.binary_id || null);
+
+                    return `
+                      <tr class="border-t border-gray-200 hover:bg-gray-50">
+                        <td class="px-4 py-2 text-gray-700 font-semibold">
+                          ${escapeHTML(s.filename || s.file_name || s.binary_id || "Unknown")}
+
+                          ${shaFromBinaryId ? `
+                            <a href="/report?hash=${encodeURIComponent(shaFromBinaryId)}"
+                              class="block text-xs text-[#AD974F] hover:text-[#8E793E] mt-1">
+                              View Report →
+                            </a>
+                          ` : ''}
+                        </td>
+
+                        <td class="px-4 py-2 text-gray-600 break-all">
+                          ${escapeHTML(shaFromBinaryId || "N/A")}
+                        </td>
+
+                        <td class="px-4 py-2">
+                          <span class="px-2 py-1 rounded text-xs font-bold bg-blue-100 text-blue-800">
+                            ${simPct}%
+                          </span>
+                        </td>
+                      </tr>
+                    `;
+                  }).join("")}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          ` : ''}
+
+          <!-- Security Features -->
+          ${Object.keys(security).length && formatType !== 'SHELLCODE' ? `
+          <div class="bg-white rounded-2xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">Security Features</h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+              ${Object.entries(security).map(([key, value]) => `
+                <div class="flex items-center space-x-2 ${value ? 'text-green-600' : 'text-red-600'}">
+                  <span class="text-lg">${value ? '✓' : '✗'}</span>
+                  <span class="font-semibold">${key}</span>
                 </div>
               `).join("")}
             </div>
           </div>
           ` : ''}
 
-          <!-- Disassembly Statistics (NEW) -->
+          <!-- Sections -->
+          ${sections.length ? `
+          <div class="bg-white rounded-2xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">Sections (${sections.length})</h2>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-gray-50">
+                  <tr>
+                    <th class="px-4 py-2 text-left">Name</th>
+                    <th class="px-4 py-2 text-left">Virtual Address</th>
+                    <th class="px-4 py-2 text-left">Size</th>
+                    <th class="px-4 py-2 text-left">Entropy</th>
+                    <th class="px-4 py-2 text-left">Permissions</th>
+                    <th class="px-4 py-2 text-left">SHA256 Hash</th>
+                  </tr>
+                </thead>
+                <tbody class="font-mono text-xs">
+                  ${sections.map(s => `
+                    <tr class="border-t border-gray-200 hover:bg-gray-50">
+                      <td class="px-4 py-2">${s.name || '(unnamed)'}</td>
+                      <td class="px-4 py-2 text-gray-600">${s.virtual_address || 'N/A'}</td>
+                      <td class="px-4 py-2 text-gray-600">${formatBytes(s.raw_size || s.virtual_size || 0)}</td>
+                      <td class="px-4 py-2 text-gray-600">${s.entropy ? s.entropy.toFixed(2) : 'N/A'}</td>
+                      <td class="px-4 py-2 text-gray-600">
+                      ${Array.isArray(s?.permissions) ? s.permissions.join(', ') : 'N/A'}</td>
+                      <td class="px-4 py-2 text-gray-600 break-all">${s.hashes?.sha256 || 'N/A'}</td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          ` : ''}
+
+          <!-- ELF Symbols (only for ELF files) -->
+          ${formatType === 'ELF' && symbols.length ? `
+          <div class="bg-white rounded-2xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">Symbols (${symbols.length})</h2>
+            <details>
+              <summary class="cursor-pointer text-sm font-semibold text-[#AD974F] hover:text-[#8E793E]">
+                View Symbols (${symbols.length} symbols)
+              </summary>
+              <div class="mt-3 max-h-96 overflow-y-auto bg-gray-50 rounded p-3">
+                <table class="w-full text-xs">
+                  <thead class="sticky top-0 bg-gray-100">
+                    <tr class="text-left">
+                      <th class="p-2">Name</th>
+                      <th class="p-2">Value</th>
+                      <th class="p-2">Type</th>
+                      <th class="p-2">Binding</th>
+                    </tr>
+                  </thead>
+                  <tbody class="font-mono">
+                    ${symbols.slice(0, 100).map(sym => `
+                      <tr class="border-t border-gray-200 hover:bg-gray-100">
+                        <td class="p-2">${sym.name || '(unnamed)'}</td>
+                        <td class="p-2 text-gray-600">${sym.value || '0'}</td>
+                        <td class="p-2 text-gray-600">${sym.type || 'N/A'}</td>
+                        <td class="p-2 text-gray-600">${sym.binding || 'N/A'}</td>
+                      </tr>
+                    `).join("")}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+          ` : ''}
+
+          <!-- Format-Specific Section -->
+          ${formatSpecificSection}
+
+          <!-- Disassembly Statistics -->
           ${functions.length ? `
           <div class="bg-white rounded-2xl shadow-lg p-6">
             <h2 class="text-xl font-bold text-[#8E793E] mb-4">Disassembly Analysis</h2>
@@ -241,15 +788,157 @@
                       <th class="p-2">Offset</th>
                       <th class="p-2">Size</th>
                       <th class="p-2">Hash</th>
+                      <th class="p-2">Suspicion Score</th>
                     </tr>
                   </thead>
                   <tbody class="font-mono">
                     ${functions.map(f => `
-                      <tr class="border-t border-gray-200 hover:bg-gray-100">
-                        <td class="p-2">${f.name}</td>
-                        <td class="p-2 text-gray-600">${f.offset}</td>
-                        <td class="p-2 text-gray-600">${f.size} bytes</td>
-                        <td class="p-2 text-gray-500 truncate max-w-xs">${f.func_hash}</td>
+                      <tr class="border-t border-gray-200">
+                        <td colspan="4" class="p-0">
+                          <details class="p-2">
+                            <summary class="cursor-pointer p-2 flex flex-wrap items-center justify-between bg-gray-50 hover:bg-gray-100 rounded">
+                              <span class="font-semibold">${f.name || '(unnamed)'}</span>
+                              <span class="text-gray-600 ml-2">${f.offset || 'N/A'}</span>
+                              <span class="text-gray-600 ml-2">${f.size || 0} bytes</span>
+                              <span class="text-gray-500 truncate max-w-xs ml-2">${f.func_hash || 'N/A'}</span>
+                              ${f.is_suspicious ? `
+                                <span class="ml-2 px-2 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700">
+                                  Suspicious ${(f.suspicion_score * 100).toFixed(1)}%
+                                </span>
+                              ` : ''}
+                            </summary>
+
+                            <div class="mt-2 p-3 bg-white rounded border border-gray-200 space-y-4">
+
+                              <!-- Mnemonics -->
+                              <div>
+                                <p class="font-semibold text-gray-700 text-sm mb-1">Disassembly</p>
+                                <pre class="whitespace-pre-wrap text-xs font-mono bg-gray-50 p-3 rounded max-h-64 overflow-y-auto overflow-x-auto">
+                  ${(Array.isArray(f.mnemonics) && f.mnemonics.length) ? f.mnemonics.join('\n') : 'No disassembly available.'}
+                                </pre>
+                              </div>
+
+                              <!-- Strings -->
+                              <div>
+                                <p class="font-semibold text-gray-700 text-sm mb-1">
+                                  Strings Referenced (${(f.strings_referenced || []).length})
+                                </p>
+                                ${(f.strings_referenced && f.strings_referenced.length)
+                                  ? `<div class="bg-gray-50 p-3 rounded max-h-40 overflow-y-auto">
+                                      ${(f.strings_referenced).map(s => `
+                                        <div class="text-xs font-mono text-gray-700 break-all border-b border-gray-200 py-1">${escapeHTML(s)}</div>
+                                      `).join("")}
+                                    </div>`
+                                  : `<p class="text-gray-500 text-xs">None detected.</p>`
+                                }
+                              </div>
+
+                              <!-- Techniques -->
+                              <div>
+                                <p class="font-semibold text-gray-700 text-sm mb-1">
+                                  Triggered MITRE Techniques (${(f.triggered_techniques || []).length})
+                                </p>
+
+                                ${(f.triggered_techniques && f.triggered_techniques.length)
+                                  ? `<div class="space-y-2">
+                                      ${f.triggered_techniques.map(t => `
+                                        <div class="border-l-4 border-[#AD974F] bg-gray-50 rounded p-3">
+                                          <div class="flex justify-between items-center">
+                                            <span class="font-bold text-sm text-gray-800">
+                                              ${t.technique_id || 'N/A'} - ${escapeHTML(t.technique_name || '')}
+                                            </span>
+                                            <span class="text-xs text-gray-500 font-mono">
+                                              ${(t.signal_score !== undefined) ? `score=${t.signal_score}` : ''}
+                                            </span>
+                                          </div>
+
+                                          <div class="text-xs text-gray-600 mt-1">
+                                            ${escapeHTML(t.detail || '')}
+                                          </div>
+
+                                          ${(t.capa_evidence && t.capa_evidence.length)
+                                            ? `<div class="mt-2">
+                                                <p class="text-xs font-semibold text-gray-600 mb-1">Evidence:</p>
+                                                <ul class="text-xs text-gray-700 list-disc ml-5 space-y-1">
+                                                  ${t.capa_evidence.map(ev => `
+                                                    <li>
+                                                      <span class="font-bold">${ev.tactic}</span> — ${escapeHTML(ev.rule)}
+                                                      <span class="text-gray-500">(confidence: ${ev.confidence})</span>
+                                                    </li>
+                                                  `).join("")}
+                                                </ul>
+                                              </div>`
+                                            : ''
+                                          }
+                                        </div>
+                                      `).join("")}
+                                    </div>`
+                                  : `<p class="text-gray-500 text-xs">No techniques triggered.</p>`
+                                }
+                              </div>
+
+                              <!-- Shared Function Matches -->
+                              <div>
+                                <p class="font-semibold text-gray-700 text-sm mb-1">
+                                  Shared Function Matches (${(f.corpus_matches || []).length})
+                                </p>
+
+                                ${(f.corpus_matches && f.corpus_matches.length)
+                                  ? `<div class="space-y-2 max-h-64 overflow-y-auto">
+                                      ${f.corpus_matches.map(m => `
+                                        <div class="bg-gray-50 border border-gray-200 rounded p-3">
+                                          <div class="flex justify-between items-center">
+                                            <span class="text-xs font-mono text-gray-700 break-all">
+                                              ${(() => {
+                                                const id = m.sha256 || m.hash || m.binary_id || "";
+                                                const extracted = id.match(/[a-f0-9]{64}/i)?.[0];
+                                                return extracted || id;
+                                              })()}
+                                            </span>
+                                            ${(() => {
+                                              const id = m.sha256 || m.hash || m.binary_id || "";
+                                              const extracted = id.match(/[a-f0-9]{64}/i)?.[0];
+                                              return extracted
+                                                ? `<a href="/report?hash=${extracted}"
+                                                    class="text-xs text-[#AD974F] hover:text-[#8E793E] font-semibold">
+                                                    View Report →
+                                                  </a>`
+                                                : '';
+                                            })()}
+                                          </div>
+
+                                          <div class="text-xs text-gray-600 mt-1">
+                                            ${(m.similarity !== undefined) ? `Similarity: ${(m.similarity * 100).toFixed(1)}%` : ''}
+                                          </div>
+
+                                          ${(m.matched_function_name)
+                                            ? `<div class="text-xs text-gray-700 mt-1">
+                                                Matched Function: <span class="font-mono">${escapeHTML(m.matched_function_name)}</span>
+                                              </div>`
+                                            : ''
+                                          }
+
+                                          ${(m.matched_strings && m.matched_strings.length)
+                                            ? `<div class="mt-2">
+                                                <p class="text-xs font-semibold text-gray-600">Strings in matched function:</p>
+                                                <div class="max-h-32 overflow-y-auto bg-white border rounded p-2">
+                                                  ${m.matched_strings.map(s => `
+                                                    <div class="text-xs font-mono text-gray-700 break-all">${escapeHTML(s)}</div>
+                                                  `).join("")}
+                                                </div>
+                                              </div>`
+                                            : ''
+                                          }
+                                        </div>
+                                      `).join("")}
+                                    </div>`
+                                  : `<p class="text-gray-500 text-xs">No shared functions detected.</p>`
+                                }
+                              </div>
+
+                            </div>
+                          </details>
+                        </td>
                       </tr>
                     `).join("")}
                   </tbody>
@@ -260,64 +949,514 @@
           ` : ''}
 
           <!-- LLM Description -->
+          ${description ? `
           <div class="bg-white rounded-2xl shadow-lg p-6">
             <h2 class="text-xl font-bold text-[#8E793E] mb-4">AI Analysis</h2>
             <div class="bg-gray-50 rounded-lg p-4">
               <p class="text-gray-700 leading-relaxed">
-                ${description.description || "No AI analysis available for this file."}
+                ${description}
               </p>
             </div>
           </div>
+          ` : ''}
 
           <!-- Imported Functions -->
+          ${imports.length ? `
           <div class="bg-white rounded-2xl shadow-lg p-6">
             <h2 class="text-xl font-bold text-[#8E793E] mb-4">Imported Functions</h2>
-            ${imports.length
-              ? `<div class="grid grid-cols-2 md:grid-cols-4 gap-2">
-                   ${imports.map(fn =>
-                     `<span class="px-3 py-2 bg-gray-100 rounded text-sm font-mono text-gray-700">${fn}</span>`
-                   ).join("")}
-                 </div>`
-              : '<p class="text-gray-500">No imported functions detected.</p>'}
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+              ${imports.map(fn =>
+                `<span class="px-3 py-2 bg-gray-100 rounded text-sm font-mono text-gray-700">${fn}</span>`
+              ).join("")}
+            </div>
           </div>
+          ` : ''}
 
           <!-- Suspicious Strings -->
+          ${suspicious_strings.length ? `
           <div class="bg-white rounded-2xl shadow-lg p-6">
             <h2 class="text-xl font-bold text-[#8E793E] mb-4">Suspicious Strings</h2>
-            ${strings.length
-              ? `<pre class="bg-gray-100 p-4 rounded text-sm overflow-x-auto font-mono text-gray-700">${strings.join("\n")}</pre>`
-              : '<p class="text-gray-500">No suspicious strings detected.</p>'}
+            <div class="bg-gray-100 rounded p-4 max-h-96 overflow-y-auto overflow-x-auto">
+              <pre class="text-sm font-mono text-gray-700 whitespace-pre-wrap">${
+                suspicious_strings.map(s => escapeHTML(s)).join("\n")
+              }</pre>
+            </div>
           </div>
+          ` : ''}
+
+          ${strings.length ? `
+          <div class="bg-white rounded-2xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">Strings</h2>
+            <div class="bg-gray-100 rounded p-4 max-h-96 overflow-y-auto overflow-x-auto">
+              <pre class="text-sm font-mono text-gray-700 whitespace-pre-wrap">${
+                strings.map(s => escapeHTML(s)).join("\n")
+              }</pre>
+            </div>
+          </div>
+          ` : ''}
 
           <!-- YARA Matches -->
+          ${Array.isArray(yara) && yara.length ? `
           <div class="bg-white rounded-2xl shadow-lg p-6">
             <h2 class="text-xl font-bold text-[#8E793E] mb-4">YARA Matches</h2>
-            ${Array.isArray(yara) && yara.length
-              ? `<ul class="list-disc ml-6 space-y-1 text-gray-700">
-                   ${yara.map(y => `<li>${y}</li>`).join("")}
-                 </ul>`
-              : '<p class="text-gray-500">No YARA rules matched.</p>'}
+            <ul class="list-disc ml-6 space-y-1 text-gray-700">
+              ${yara.map(match => `<li><strong>${match.rule_name || match}</strong>${match.description ? `: ${match.description}` : ''}${match.source ? ` (${match.source})` : ''}</li>`).join("")}
+            </ul>
           </div>
+          ` : ''}
 
-          <!-- MITRE ATT&CK -->
+          <!-- Threat Intelligence -->
+          ${data.threat_intelligence ? `
           <div class="bg-white rounded-2xl shadow-lg p-6">
-            <h2 class="text-xl font-bold text-[#8E793E] mb-4">MITRE ATT&CK Techniques</h2>
-            ${Object.values(mitre_map).length
-              ? `<ul class="space-y-3">
-                   ${Object.values(mitre_map).map(t => `
-                     <li class="border-l-4 border-[#AD974F] pl-4 py-2">
-                       <div class="font-bold text-[#231F20]">${t.technique_id}: ${t.name}</div>
-                       <div class="text-sm text-gray-600 mt-1">${t.description}</div>
-                     </li>
-                   `).join("")}
-                 </ul>`
-              : '<p class="text-gray-500">No MITRE ATT&CK techniques identified.</p>'}
-          </div>
-        `;
-        // After rendering the report HTML, create the download button.
-        // Use several fallbacks to find the filename (some reports use `ingest_analysis`, others `file_info`).
-        const fname = (ingest && ingest.filename) || (file_info && file_info.name) || (static_analysis && static_analysis.basic_info && static_analysis.basic_info.filename) || null;
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">Threat Intelligence</h2>
 
+            <!-- Verdict Summary -->
+            ${data.threat_intelligence?.verdict ? `
+              <div class="mb-4 p-4 rounded-lg ${
+                data.threat_intelligence.verdict.verdict === 'Malicious'
+                  ? 'bg-red-100 border-l-4 border-red-600'
+                  : 'bg-yellow-100 border-l-4 border-yellow-600'
+              }">
+                <div class="flex justify-between items-center">
+                  <span class="font-bold text-lg">
+                    ${data.threat_intelligence.verdict.verdict || 'Unknown'} <span class="text-sm font-normal text-gray-600">(${(data.threat_intelligence.verdict.confidence * 100).toFixed(1)}%)</span>
+                  </span>
+                </div>
+              </div>
+            ` : ''}
+
+            <!-- VirusTotal Summary -->
+            ${data.threat_intelligence?.VirusTotal ? (() => {
+              const vtEntry = Object.values(data.threat_intelligence.VirusTotal)
+                .find(v => v.analysis_stats);
+
+              if (!vtEntry) return '';
+
+              const stats = vtEntry.analysis_stats;
+
+              return `
+                <div class="mb-4">
+                  <h3 class="font-semibold text-gray-700 mb-2">VirusTotal</h3>
+                  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    <div class="bg-gray-50 p-3 rounded">
+                      <span class="text-gray-500">Malicious</span>
+                      <div class="font-bold text-red-600">${stats.malicious || 0}</div>
+                    </div>
+                    <div class="bg-gray-50 p-3 rounded">
+                      <span class="text-gray-500">Suspicious</span>
+                      <div class="font-bold text-yellow-600">${stats.suspicious || 0}</div>
+                    </div>
+                    <div class="bg-gray-50 p-3 rounded">
+                      <span class="text-gray-500">Undetected</span>
+                      <div class="font-bold text-gray-600">${stats.undetected || 0}</div>
+                    </div>
+                    <div class="bg-gray-50 p-3 rounded">
+                      <span class="text-gray-500">Permalink</span>
+                      <a href="${vtEntry.permalink}" target="_blank" class="text-[#AD974F] text-xs">
+                        View →
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              `;
+            })() : ''}
+
+            <!-- MITRE ATT&CK -->
+            ${data.threat_intelligence?.MITRE_ATTACK?.hits?.capa?.length ? `
+              <div class="mb-4">
+                <h3 class="font-semibold text-gray-700 mb-2">MITRE ATT&CK (CAPA)</h3>
+                <div class="space-y-2">
+                  ${data.threat_intelligence.MITRE_ATTACK.hits.capa.map(hit => `
+                    <div class="border-l-4 border-[#AD974F] pl-3 py-2 bg-gray-50 rounded">
+                      <div class="font-bold text-sm">${hit.technique} - ${hit.tactic}</div>
+                      <div class="text-xs text-gray-600">${hit.rule}</div>
+                    </div>
+                  `).join("")}
+                </div>
+              </div>
+            ` : ''}
+
+            <!-- OSINT / Abuse Sources -->
+            <div class="mb-4">
+              <h3 class="font-semibold text-gray-700 mb-2">OSINT / Reputation</h3>
+
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+
+                ${data.threat_intelligence.AbuseIPDB ? Object.values(data.threat_intelligence.AbuseIPDB).map(ip => `
+                  <div class="bg-gray-50 p-3 rounded">
+                    <div class="font-mono text-xs">${ip.ipAddress}</div>
+                    <div class="text-red-600 font-bold">Abuse Score: ${ip.abuseConfidenceScore}</div>
+                    <div class="text-xs text-gray-500">${ip.countryCode || ''} ${ip.isp || ''}</div>
+                  </div>
+                `).join("") : ''}
+
+                ${data.threat_intelligence.AbuseCH ? `
+                <div class="bg-white rounded-xl shadow p-4 mt-4">
+                  <div class="text-[#8E793E] font-bold mb-2">AbuseCH Intelligence</div>
+
+                  ${Object.entries(data.threat_intelligence.AbuseCH).map(([hash, entry]) => {
+                    if (entry.error) {
+                      return `
+                        <div class="border rounded p-2 mb-2 bg-gray-50">
+                          <div class="text-xs font-mono break-all">${hash}</div>
+                          <div class="text-red-500 text-sm">Error: ${entry.error}</div>
+                        </div>
+                      `;
+                    }
+
+                    return `
+                      <div class="border rounded-lg p-3 mb-3 bg-gray-50">
+                        <div class="flex justify-between gap-3">
+                          <div>
+                            <div class="font-semibold text-sm">${entry.file_name}</div>
+                            <div class="text-xs text-gray-500 break-all">${hash}</div>
+                          </div>
+                          <div class="text-xs bg-red-100 text-red-700 px-2 py-1 rounded">
+                            ${entry.signature || "Unknown"}
+                          </div>
+                        </div>
+
+                        <div class="text-xs text-gray-600 mt-2 grid grid-cols-2 gap-1">
+                          <div>Type: ${entry.file_type}</div>
+                          <div>Size: ${entry.file_size}</div>
+                          <div>Delivery: ${entry.delivery_method}</div>
+                          <div>First Seen: ${entry.first_seen}</div>
+                        </div>
+                      </div>
+                    `;
+                  }).join("")}
+                </div>
+              ` : ''}
+
+              </div>
+            </div>
+
+            <!-- Vendor Intel -->
+            ${data.threat_intelligence.vendor_intel ? `
+              <div>
+                <h3 class="font-semibold text-gray-700 mb-2">Vendor Intelligence</h3>
+                <div class="text-xs text-gray-600 bg-gray-50 p-3 rounded max-h-64 overflow-y-auto">
+                  <pre>${escapeHTML(JSON.stringify(data.threat_intelligence.vendor_intel, null, 2))}</pre>
+                </div>
+              </div>
+            ` : ''}
+
+          </div>
+          ` : ''}
+
+          <!-- StegoScan Results -->
+          ${data.stegoscan ? `
+          <div class="bg-white rounded-2xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">Steganography Analysis (StegoScan)</h2>
+            
+            <!-- Verdict Banner -->
+            <div class="mb-6 p-4 rounded-lg ${ 
+              data.stegoscan.verdict === 'STEGO_DETECTED' ? 'bg-red-100 border-l-4 border-red-600' :
+              data.stegoscan.verdict === 'SUSPICIOUS' ? 'bg-yellow-100 border-l-4 border-yellow-600' :
+              'bg-green-100 border-l-4 border-green-600'
+            }">
+              <div class="flex items-center justify-between">
+                <div>
+                  <span class="text-lg font-bold ${
+                    data.stegoscan.verdict === 'STEGO_DETECTED' ? 'text-red-800' :
+                    data.stegoscan.verdict === 'SUSPICIOUS' ? 'text-yellow-800' :
+                    'text-green-800'
+                  }">
+                    ${data.stegoscan.verdict === 'STEGO_DETECTED' ? 'Steganography Detected' :
+                      data.stegoscan.verdict === 'SUSPICIOUS' ? 'Suspicious' : 'Clean'}
+                  </span>
+                  <span class="ml-2 text-sm text-gray-600">
+                    (Risk Score: ${data.stegoscan.risk_score || 0}/100, Confidence: ${((data.stegoscan.confidence || 0) * 100).toFixed(0)}%)
+                  </span>
+                </div>
+                <div class="text-right text-sm text-gray-600">
+                  <p>Files Scanned: ${data.stegoscan.files_scanned || 0}</p>
+                  <p>Carriers Found: ${(data.stegoscan.stego_carriers || []).length}</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Thesis Summary -->
+            ${data.stegoscan.thesis_summary ? `
+            <div class="mb-6">
+              <h3 class="text-lg font-semibold text-[#231F20] mb-2">Analysis Summary</h3>
+              <p class="text-gray-700 text-sm leading-relaxed bg-gray-50 p-4 rounded">
+                ${escapeHTML(data.stegoscan.thesis_summary)}
+              </p>
+            </div>
+            ` : ''}
+
+            <!-- Stego Carriers -->
+            ${(data.stegoscan.stego_carriers || []).length > 0 ? `
+            <div class="mb-6">
+              <h3 class="text-lg font-semibold text-[#231F20] mb-3">Detected Carrier Files</h3>
+              <div class="space-y-4">
+                ${data.stegoscan.stego_carriers.map(carrier => `
+                  <div class="border border-gray-200 rounded-lg p-4">
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="font-mono font-bold text-gray-800">${escapeHTML(carrier.filename || '')}</span>
+                      <span class="px-2 py-1 rounded text-xs font-semibold ${
+                        carrier.verdict === 'STEGO_DETECTED' ? 'bg-red-100 text-red-800' :
+                        carrier.verdict === 'SUSPICIOUS' ? 'bg-yellow-100 text-yellow-800' :
+                        'bg-gray-100 text-gray-800'
+                      }">${carrier.verdict || 'UNKNOWN'}</span>
+                    </div>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+                      <div><span class="text-gray-500">Type:</span> <span class="font-semibold">${carrier.file_type || 'N/A'}</span></div>
+                      <div><span class="text-gray-500">Size:</span> <span class="font-semibold">${(carrier.file_size || 0).toLocaleString()} bytes</span></div>
+                      <div><span class="text-gray-500">Entropy:</span> <span class="font-semibold">${carrier.entropy || 'N/A'}</span></div>
+                      <div><span class="text-gray-500">Histogram:</span> <span class="font-semibold ${carrier.histogram_anomaly ? 'text-red-600' : 'text-green-600'}">${carrier.histogram_anomaly ? 'Anomaly ⚠️' : 'Normal'}</span></div>
+                    </div>
+                    
+                    <!-- zsteg Summary -->
+                    ${carrier.zsteg_summary ? `
+                    <div class="mt-3 pt-3 border-t border-gray-200">
+                      <h4 class="text-sm font-semibold text-gray-700 mb-2">zsteg Analysis</h4>
+                      <div class="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+                        <div class="bg-gray-50 p-2 rounded"><span class="text-gray-500">Total Hits:</span> <span class="font-bold">${carrier.zsteg_summary.total_hits || 0}</span></div>
+                        <div class="bg-red-50 p-2 rounded"><span class="text-gray-500">High Signal:</span> <span class="font-bold text-red-600">${carrier.zsteg_summary.high_signal || 0}</span></div>
+                        <div class="bg-yellow-50 p-2 rounded"><span class="text-gray-500">Medium Signal:</span> <span class="font-bold text-yellow-600">${carrier.zsteg_summary.medium_signal || 0}</span></div>
+                        <div class="bg-gray-50 p-2 rounded"><span class="text-gray-500">Compressed:</span> <span class="font-bold">${carrier.zsteg_summary.compressed_data || 0}</span></div>
+                        <div class="bg-gray-50 p-2 rounded"><span class="text-gray-500">Executables:</span> <span class="font-bold">${carrier.zsteg_summary.executable_signatures || 0}</span></div>
+                      </div>
+                    </div>
+                    ` : ''}
+
+                    <!-- Indicators -->
+                    ${(carrier.indicators || []).length > 0 ? `
+                    <div class="mt-3 pt-3 border-t border-gray-200">
+                      <h4 class="text-sm font-semibold text-gray-700 mb-2">Indicators</h4>
+                      <div class="flex flex-wrap gap-2">
+                        ${carrier.indicators.map(ind => `
+                          <span class="px-2 py-1 bg-red-50 text-red-700 rounded text-xs">${escapeHTML(ind)}</span>
+                        `).join("")}
+                      </div>
+                    </div>
+                    ` : ''}
+                  </div>
+                `).join("")}
+              </div>
+            </div>
+            ` : ''}
+
+            <!-- Extracted Images Only (No List) -->
+            ${data.stegoscan.found_files && Object.keys(data.stegoscan.found_files).length > 0 ? `
+            <div>
+              <h3 class="text-lg font-semibold text-[#231F20] mb-3">Extracted Images</h3>
+              <div class="bg-gray-50 rounded p-4 max-h-96 overflow-y-auto">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  ${
+                    Object.values(data.stegoscan.found_files)
+                      .flat()
+                      .filter(f => /\.(png|jpg|jpeg|bmp|gif|webp)$/i.test(f))
+                      .map(f => {
+                        const cleanPath = f.replace(/\\/g, "/");
+                        // Strip any absolute prefix up to and including the _stegoscan directory
+                        const stegoId = data.ingest_analysis?.sha256 || data.hashes?.sha256 || hash;
+                        const stegoDirMarker = `${stegoId}_stegoscan/`;
+                        const markerIdx = cleanPath.indexOf(stegoDirMarker);
+                        const relativePath = markerIdx !== -1
+                          ? cleanPath.slice(markerIdx + stegoDirMarker.length)
+                          : cleanPath.replace(/^\/+/, "");  // fallback: just strip leading slashes
+                        const encodedPath = relativePath.split("/").map(encodeURIComponent).join("/");
+                        const url = `/results/${stegoId}_stegoscan/${encodedPath}`;
+
+                        return `
+                          <div class="border rounded-lg bg-white p-2 shadow">
+                            <div class="text-xs font-mono text-gray-600 mb-2 break-all">
+                              ${escapeHTML(f)}
+                            </div>
+                            <img src="${url}" class="w-full rounded border" loading="lazy">
+                          </div>
+                        `;
+                      }).join("")
+                  }
+                </div>
+              </div>
+            </div>
+            ` : ''}
+          </div>
+          ` : ''}
+
+          <!-- Dynamic Analysis (CAPE Sandbox) -->
+          ${dynamic ? `
+          <div class="bg-white rounded-2xl shadow-lg p-6">
+            <h2 class="text-xl font-bold text-[#8E793E] mb-4">Dynamic Analysis (CAPE Sandbox)</h2>
+            
+            <!-- Sandbox Info -->
+            ${dynamic.sandbox ? `
+            <div class="mb-6">
+              <h3 class="text-lg font-semibold text-[#231F20] mb-3">Sandbox Execution</h3>
+              <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div class="bg-gray-50 p-3 rounded">
+                  <span class="block text-gray-500">Machine</span>
+                  <span class="font-semibold">${dynamic.sandbox.machine || 'N/A'}</span>
+                </div>
+                <div class="bg-gray-50 p-3 rounded">
+                  <span class="block text-gray-500">Platform</span>
+                  <span class="font-semibold">${dynamic.sandbox.platform || 'N/A'}</span>
+                </div>
+                <div class="bg-gray-50 p-3 rounded">
+                  <span class="block text-gray-500">Duration</span>
+                  <span class="font-semibold">${dynamic.sandbox.duration || 'N/A'}s</span>
+                </div>
+                <div class="bg-gray-50 p-3 rounded">
+                  <span class="block text-gray-500">Malware Score</span>
+                  <span class="font-semibold ${dynamic.sandbox.malscore >= 8 ? 'text-red-600' : dynamic.sandbox.malscore >= 5 ? 'text-yellow-600' : 'text-green-600'}">${dynamic.sandbox.malscore || 'N/A'}</span>
+                </div>
+              </div>
+              <div class="mt-3 flex items-center gap-2">
+                <span class="text-gray-500">Status:</span>
+                <span class="inline-block px-3 py-1 rounded-full text-sm font-semibold ${dynamic.sandbox.malstatus?.toLowerCase() === 'malicious' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}">
+                  ${dynamic.sandbox.malstatus || 'Unknown'}
+                </span>
+              </div>
+            </div>
+            ` : ''}
+
+            <!-- Behavioral Summary -->
+            ${dynamic.behavior?.summary ? `
+            <div class="mb-6">
+              <h3 class="text-lg font-semibold text-[#231F20] mb-3">Behavioral Summary</h3>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                ${dynamic.behavior.summary.files?.length ? `
+                <div class="bg-gray-50 p-3 rounded">
+                  <span class="block text-gray-500">Files Accessed</span>
+                  <span class="font-semibold">${dynamic.behavior.summary.files.length}</span>
+                </div>
+                ` : ''}
+                ${dynamic.behavior.summary.keys?.length ? `
+                <div class="bg-gray-50 p-3 rounded">
+                  <span class="block text-gray-500">Registry Keys</span>
+                  <span class="font-semibold">${dynamic.behavior.summary.keys.length}</span>
+                </div>
+                ` : ''}
+                ${dynamic.behavior.summary.executed_commands?.length ? `
+                <div class="bg-gray-50 p-3 rounded">
+                  <span class="block text-gray-500">Commands Executed</span>
+                  <span class="font-semibold">${dynamic.behavior.summary.executed_commands.length}</span>
+                </div>
+                ` : ''}
+                ${dynamic.behavior.summary.resolved_apis?.length ? `
+                <div class="bg-gray-50 p-3 rounded">
+                  <span class="block text-gray-500">API Calls</span>
+                  <span class="font-semibold">${dynamic.behavior.summary.resolved_apis.length}</span>
+                </div>
+                ` : ''}
+              </div>
+            </div>
+            ` : ''}
+
+            <!-- Network Indicators -->
+            ${dynamic.network ? `
+            <div class="mb-6">
+                            <h3 class="text-lg font-semibold text-[#231F20] mb-3">Network Activity</h3>
+                            ${dynamic.network.domains?.length ? `
+                            <div class="mb-3">
+                <span class="text-gray-500 text-sm">Contacted Domains:</span>
+
+                <div class="mt-2 overflow-x-auto max-h-64 overflow-y-auto bg-gray-50 rounded">
+                  <table class="w-full text-xs">
+                    <thead class="sticky top-0 bg-gray-100">
+                      <tr class="text-left">
+                        <th class="px-3 py-2">Domain</th>
+                        <th class="px-3 py-2">IP</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${dynamic.network.domains.slice(0, 50).map(d => {
+                        const domain = (typeof d === "string") ? d : (d.domain || d.host || "N/A");
+                        const ip = (typeof d === "string") ? "N/A" : (d.ip || d.address || "N/A");
+
+                        return `
+                          <tr class="border-t border-gray-200 hover:bg-gray-100">
+                            <td class="px-3 py-2 font-mono text-gray-700 break-all">${domain}</td>
+                            <td class="px-3 py-2 font-mono text-gray-600 break-all">${ip}</td>
+                          </tr>
+                        `;
+                      }).join("")}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              ` : ''}
+              ${dynamic.network.hosts?.length ? `
+              <div class="mb-3">
+                <span class="text-gray-500 text-sm">Contacted IPs:</span>
+                <ul class="mt-2 space-y-1">
+                  ${dynamic.network.hosts.slice(0, 10).map(h => `
+                    <li class="text-sm font-mono text-gray-700 bg-gray-50 px-2 py-1 rounded">${h.ip || h}</li>
+                  `).join("")}
+                </ul>
+              </div>
+              ` : ''}
+              ${dynamic.network.http?.length ? `
+              <div>
+                <span class="text-gray-500 text-sm">HTTP Requests:</span>
+                <ul class="mt-2 space-y-1">
+                  ${dynamic.network.http.slice(0, 5).map(h => `
+                    <li class="text-sm font-mono text-gray-700 bg-gray-50 px-2 py-1 rounded">${h.method || 'GET'} ${h.uri || h.url || h}</li>
+                  `).join("")}
+                </ul>
+              </div>
+              ` : ''}
+              ${(!dynamic.network.domains?.length && !dynamic.network.hosts?.length && !dynamic.network.http?.length) ? `
+              <p class="text-gray-500 text-sm">No network activity detected.</p>
+              ` : ''}
+            </div>
+            ` : ''}
+
+            <!-- Signatures -->
+            ${dynamic.signatures?.length ? `
+            <div class="mb-6">
+              <h3 class="text-lg font-semibold text-[#231F20] mb-3">CAPE Signatures (${dynamic.signatures.length})</h3>
+              <div class="max-h-64 overflow-y-auto">
+                <ul class="space-y-2">
+                  ${dynamic.signatures.slice(0, 20).map(sig => `
+                    <li class="border-l-4 border-red-500 pl-3 py-2 bg-gray-50 rounded">
+                      <div class="font-semibold text-sm">${sig.name || sig.description || 'Signature'}</div>
+                      ${sig.description ? `<div class="text-xs text-gray-600 mt-1">${sig.description}</div>` : ''}
+                    </li>
+                  `).join("")}
+                </ul>
+              </div>
+            </div>
+            ` : ''}
+
+            <!-- Extracted Payloads -->
+            ${dynamic.cape_payloads?.length ? `
+            <div>
+              <h3 class="text-lg font-semibold text-[#231F20] mb-3">Extracted Payloads (${dynamic.cape_payloads.length})</h3>
+              <div class="overflow-x-auto">
+                <table class="w-full text-xs">
+                  <thead class="bg-gray-50">
+                    <tr>
+                      <th class="px-3 py-2 text-left">SHA256</th>
+                      <th class="px-3 py-2 text-left">Type</th>
+                      <th class="px-3 py-2 text-left">Size</th>
+                    </tr>
+                  </thead>
+                  <tbody class="font-mono">
+                    ${dynamic.cape_payloads.slice(0, 10).map(p => `
+                      <tr class="border-t border-gray-200">
+                        <td class="px-3 py-2 text-gray-600 break-all">${p.sha256 || p.file_sha256 || 'N/A'}</td>
+                        <td class="px-3 py-2 text-gray-600">${p.type || p.file_type || 'N/A'}</td>
+                        <td class="px-3 py-2 text-gray-600">${p.size || 'N/A'}</td>
+                      </tr>
+                    `).join("")}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            ` : ''}
+          </div>
+          ` : ''}
+        `;
+
+        hideEmptyFields();
+
+        // After rendering the report HTML, create the download button
+        const fname = file_info.filename || file_info.name;
         if (fname) {
           const downloadUrl = `/download/${encodeURIComponent(fname)}`;
 
@@ -329,12 +1468,21 @@
           const overview = document.getElementById('reportContent').querySelector('.bg-white');
           if (overview) {
             const wrapper = document.createElement('div');
-            wrapper.className = 'mt-4';
+            wrapper.className = 'mt-4 flex flex-wrap gap-2';
             wrapper.appendChild(btn);
+
+            const pdfBtn = document.createElement('button');
+            pdfBtn.textContent = 'Download PDF Report';
+            pdfBtn.className = 'inline-block mt-4 btn-primary';
+            pdfBtn.addEventListener('click', () => {
+              downloadPdfReport(file_info.filename || file_info.name || 'report');
+            });
+            wrapper.appendChild(pdfBtn);
+
             overview.appendChild(wrapper);
           }
         } else {
-          console.debug('Download button not created: no filename found in report', { ingest, file_info, static_analysis, hashes });
+          console.debug('Download button not created: no filename found in report');
         }
       } catch (err) {
         document.getElementById("reportContent").innerHTML = `
@@ -346,6 +1494,376 @@
         `;
         console.error(err);
       }
+
+      // REPORT SEARCH + FILTER FUNCTION
+
+      (function injectReportSearch() {
+        const container = document.getElementById("reportContent");
+        if (!container) return;
+
+        // Avoid duplicate injection
+        if (document.getElementById("reportSearchInput")) return;
+
+        const searchWrapper = document.createElement("div");
+        searchWrapper.className = "bg-white rounded-2xl shadow-lg p-6";
+
+        searchWrapper.innerHTML = `
+          <h2 class="text-lg font-bold text-[#8E793E] mb-3">Search Report</h2>
+
+          <div class="flex flex-col md:flex-row gap-3 items-center">
+            <input 
+              id="reportSearchInput"
+              type="text"
+              placeholder="Search functions, strings, imports, MITRE techniques, hashes..."
+              class="w-full md:flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#AD974F]"
+            />
+
+            <button 
+              id="reportSearchClear"
+              class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm font-semibold"
+            >
+              Clear
+            </button>
+
+            <span id="reportSearchCount" class="text-sm text-gray-600 font-semibold">
+              Showing all sections
+            </span>
+          </div>
+        `;
+
+        // Insert at top of report
+        container.prepend(searchWrapper);
+
+        const input = document.getElementById("reportSearchInput");
+        const clearBtn = document.getElementById("reportSearchClear");
+        const countLabel = document.getElementById("reportSearchCount");
+
+        const allCards = Array.from(container.children).filter(el => el !== searchWrapper);
+
+        function normalizeText(str) {
+          return (str || "").toLowerCase().trim();
+        }
+
+        function openDetailsContainingMatch(card, query) {
+          const detailsBlocks = card.querySelectorAll("details");
+          detailsBlocks.forEach(d => {
+            const text = normalizeText(d.innerText);
+            d.open = text.includes(query);
+          });
+        }
+
+        function filterReport(queryRaw) {
+          const query = normalizeText(queryRaw);
+
+          if (!query) {
+            allCards.forEach(card => {
+              card.style.display = "";
+              card.querySelectorAll("details").forEach(d => d.open = false);
+            });
+            countLabel.textContent = "Showing all sections";
+            return;
+          }
+
+          let visibleCount = 0;
+
+          allCards.forEach(card => {
+            const text = normalizeText(card.innerText);
+
+            if (text.includes(query)) {
+              card.style.display = "";
+              visibleCount++;
+              openDetailsContainingMatch(card, query);
+            } else {
+              card.style.display = "none";
+            }
+          });
+
+          countLabel.textContent = `Showing ${visibleCount}/${allCards.length} sections`;
+        }
+
+        input.addEventListener("input", () => {
+          filterReport(input.value);
+        });
+
+        clearBtn.addEventListener("click", () => {
+          input.value = "";
+          filterReport("");
+          input.focus();
+        });
+      })();
+    }
+
+    function buildShellcodeSection(sc, emu, data) {
+      if (!sc && !emu) return '';
+
+      const cls       = sc?.classification     || 'N/A';
+      const reason    = sc?.classification_reason || 'N/A';
+      const rawhex    = sc?.shellcode_hex?.rawhex  || '';
+      const strlit    = sc?.shellcode_hex?.strlit  || '';
+      const deobf     = sc?.deobfuscation          || {};
+      const pushStrs  = sc?.strings_detailed?.push_stack || [];
+      const indicators = sc?.indicators || {};
+      const features  = sc?.features_detected || [];
+
+      // Emulation fields
+      const apiCalls  = emu?.api_calls    || [];
+      const dlls      = emu?.dlls_loaded  || [];
+      const registry  = emu?.registry     || {};
+      const artifacts = emu?.artifacts    || {};
+      const network   = emu?.network_indicators || [];
+      const syscalls  = emu?.syscalls     || [];
+
+      // Active evasion indicators
+      const activeIndicators = Object.entries(indicators)
+        .filter(([, v]) => Array.isArray(v) && v.length)
+        .map(([k]) => k);
+
+      return `
+        <!-- Shellcode Classification -->
+        <div class="bg-white rounded-2xl shadow-lg p-6">
+          <h2 class="text-xl font-bold text-[#8E793E] mb-4">Shellcode Analysis</h2>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div class="bg-red-50 border border-red-200 rounded-lg p-4">
+              <p class="font-bold text-red-700 text-base mb-1">${cls}</p>
+              <p class="text-red-600">${reason}</p>
+            </div>
+            <div class="bg-gray-50 rounded-lg p-4 space-y-2">
+              ${features.length ? `<p><span class="font-semibold text-gray-700">Features:</span> <span class="text-gray-600">${features.join(', ')}</span></p>` : ''}
+              ${activeIndicators.length
+                ? `<p><span class="font-semibold text-gray-700">Evasion Indicators:</span>
+                   <span class="text-orange-600 font-semibold">${activeIndicators.join(', ')}</span></p>`
+                : '<p class="text-gray-500 text-xs">No evasion indicators detected.</p>'}
+            </div>
+          </div>
+
+          ${rawhex ? `
+          <div class="mt-4">
+            <p class="font-semibold text-gray-700 mb-2 text-sm">Shellcode Bytes</p>
+            <pre class="bg-gray-900 text-green-400 text-xs p-4 rounded-lg overflow-x-auto font-mono leading-relaxed">${rawhex.match(/.{1,2}/g)?.join(' ') || rawhex}</pre>
+            ${strlit ? `<pre class="bg-gray-100 text-gray-700 text-xs p-3 rounded mt-2 overflow-x-auto font-mono">${strlit}</pre>` : ''}
+          </div>` : ''}
+
+          ${pushStrs.length ? `
+          <div class="mt-4">
+            <p class="font-semibold text-gray-700 mb-2 text-sm">Push-Stack Strings</p>
+            <div class="space-y-1">
+              ${pushStrs.map(s => `
+                <div class="flex items-center space-x-3 bg-yellow-50 border border-yellow-200 rounded px-3 py-2 text-xs font-mono">
+                  <span class="text-gray-500">${s.offset}</span>
+                  <span class="font-bold text-yellow-800">${s.value}</span>
+                  <span class="text-gray-400">(${s.length} bytes)</span>
+                </div>`).join('')}
+            </div>
+          </div>` : ''}
+
+          ${deobf.deobfuscated ? `
+          <div class="mt-4 bg-orange-50 border border-orange-200 rounded-lg p-4">
+            <p class="font-semibold text-orange-700 mb-2 text-sm">Deobfuscation</p>
+            <div class="text-xs space-y-1 font-mono">
+              <p><span class="text-gray-600">MD5:</span> ${deobf.md5 || 'N/A'}</p>
+              <p><span class="text-gray-600">SHA256:</span> ${deobf.sha256 || 'N/A'}</p>
+            </div>
+          </div>` : ''}
+
+          ${(() => {
+            const disasm = data?.disassembly || data?.static_analysis?.disassembly;
+            const text = formatDisassemblyText(disasm);
+            return text ? `
+            <div class="mt-4">
+              <p class="font-semibold text-gray-700 mb-2 text-sm">Disassembly</p>
+              <pre class="bg-gray-900 text-green-200 text-xs p-4 rounded-lg overflow-x-auto font-mono leading-relaxed">${escapeHTML(text)}</pre>
+            </div>` : '';
+          })()}
+        </div>
+
+        <!-- Emulated API Calls -->
+        ${apiCalls.length ? `
+        <div class="bg-white rounded-2xl shadow-lg p-6">
+          <h2 class="text-xl font-bold text-[#8E793E] mb-4">Emulated API Calls (${apiCalls.length})</h2>
+          <div class="space-y-3">
+            ${apiCalls.map(api => `
+              <div class="border border-gray-200 rounded-lg overflow-hidden">
+                <div class="bg-gray-50 px-4 py-2 flex items-center justify-between">
+                  <span class="font-mono font-bold text-sm text-[#231F20]">${api.name}</span>
+                  <div class="flex items-center space-x-3 text-xs">
+                    <span class="text-gray-500">${api.dll || ''}</span>
+                    <span class="text-gray-400 font-mono">${api.address || ''}</span>
+                  </div>
+                </div>
+                <div class="px-4 py-3 text-xs space-y-1 font-mono">
+                  ${(api.arguments || []).map(arg => `
+                    <div class="flex items-start space-x-2">
+                      <span class="text-blue-600 min-w-[80px]">${arg.type}</span>
+                      <span class="text-gray-500 min-w-[120px]">${arg.name}</span>
+                      <span class="text-green-700 break-all">${arg.value}</span>
+                    </div>`).join('')}
+                  ${api.return_value ? `
+                    <div class="flex items-start space-x-2 border-t border-gray-100 pt-1 mt-1">
+                      <span class="text-purple-600 min-w-[80px]">returns</span>
+                      <span class="text-purple-700 break-all">${api.return_value}</span>
+                    </div>` : ''}
+                </div>
+              </div>`).join('')}
+          </div>
+        </div>` : ''}
+
+        <!-- DLLs & Artifacts -->
+        ${(dlls.length || artifacts.executables?.length || artifacts.files?.length || network.length) ? `
+        <div class="bg-white rounded-2xl shadow-lg p-6">
+          <h2 class="text-xl font-bold text-[#8E793E] mb-4">Runtime Artifacts</h2>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            ${dlls.length ? `
+            <div>
+              <p class="font-semibold text-gray-700 mb-2">DLLs Loaded</p>
+              ${dlls.map(d => `<span class="inline-block mr-2 mb-1 px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-mono">${d}</span>`).join('')}
+            </div>` : ''}
+            ${artifacts.executables?.length ? `
+            <div>
+              <p class="font-semibold text-gray-700 mb-2">Executables / DLL Artifacts</p>
+              ${artifacts.executables.map(e => `<span class="inline-block mr-2 mb-1 px-2 py-1 bg-red-100 text-red-800 rounded text-xs font-mono">${e}</span>`).join('')}
+            </div>` : ''}
+            ${artifacts.files?.length ? `
+            <div>
+              <p class="font-semibold text-gray-700 mb-2">File Artifacts</p>
+              ${artifacts.files.map(f => `<span class="inline-block mr-2 mb-1 px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs font-mono">${f}</span>`).join('')}
+            </div>` : ''}
+            ${network.length ? `
+            <div>
+              <p class="font-semibold text-gray-700 mb-2">Network Indicators</p>
+              ${network.map(n => `<span class="inline-block mr-2 mb-1 px-2 py-1 bg-orange-100 text-orange-800 rounded text-xs font-mono">${n}</span>`).join('')}
+            </div>` : ''}
+          </div>
+        </div>` : ''}
+
+        <!-- Registry Activity -->
+        ${(registry.actions?.length || registry.techniques?.length || registry.hierarchy?.length) ? `
+        <div class="bg-white rounded-2xl shadow-lg p-6">
+          <h2 class="text-xl font-bold text-[#8E793E] mb-4">Registry Activity</h2>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+            ${registry.actions?.length ? `
+            <div>
+              <p class="font-semibold text-gray-700 mb-2">Actions</p>
+              ${registry.actions.map(a => `<span class="inline-block mr-1 mb-1 px-2 py-1 bg-gray-100 rounded text-xs">${a}</span>`).join('')}
+            </div>` : ''}
+            ${registry.techniques?.length ? `
+            <div>
+              <p class="font-semibold text-gray-700 mb-2">Techniques</p>
+              ${registry.techniques.map(t => `<span class="inline-block mr-1 mb-1 px-2 py-1 bg-orange-100 text-orange-700 rounded text-xs">${t}</span>`).join('')}
+            </div>` : ''}
+            ${registry.hierarchy?.length ? `
+            <div>
+              <p class="font-semibold text-gray-700 mb-2">Hives Accessed</p>
+              ${registry.hierarchy.map(h => `<span class="inline-block mr-1 mb-1 px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs font-mono">${h}</span>`).join('')}
+            </div>` : ''}
+          </div>
+        </div>` : ''}
+      `;
+    }
+
+    function buildPESpecificSection(formatSpecific) {
+      const dosHeader = formatSpecific.dos_header || {};
+      const fileHeader = formatSpecific.file_header || {};
+      const optionalHeader = formatSpecific.optional_header || {};
+
+      return `
+        <div class="bg-white rounded-2xl shadow-lg p-6">
+          <h2 class="text-xl font-bold text-[#8E793E] mb-4">PE-Specific Details</h2>
+          
+          ${Object.keys(fileHeader).length ? `
+          <div class="mb-4">
+            <h3 class="font-semibold text-gray-700 mb-2">File Header</h3>
+            <div class="bg-gray-50 rounded p-3 text-sm space-y-1">
+              <p><span class="font-mono text-gray-600">Machine:</span> ${fileHeader.Machine?.decoded || 'N/A'}</p>
+              <p><span class="font-mono text-gray-600">Number of Sections:</span> ${fileHeader.NumberOfSections || 'N/A'}</p>
+              <p><span class="font-mono text-gray-600">Time Date Stamp:</span> ${fileHeader.TimeDateStamp?.readable || 'N/A'}</p>
+              <p><span class="font-mono text-gray-600">Characteristics:</span> ${fileHeader.Characteristics?.flags?.join(', ') || 'N/A'}</p>
+            </div>
+          </div>
+          ` : ''}
+
+          ${Object.keys(optionalHeader).length ? `
+          <div class="mb-4">
+            <h3 class="font-semibold text-gray-700 mb-2">Optional Header</h3>
+            <div class="bg-gray-50 rounded p-3 text-sm space-y-1">
+              <p><span class="font-mono text-gray-600">Magic:</span> ${optionalHeader.Magic?.decoded || 'N/A'}</p>
+              <p><span class="font-mono text-gray-600">Subsystem:</span> ${optionalHeader.Subsystem?.decoded || 'N/A'}</p>
+              <p><span class="font-mono text-gray-600">Entry Point:</span> ${optionalHeader.AddressOfEntryPoint || 'N/A'}</p>
+              <p><span class="font-mono text-gray-600">Image Base:</span> ${optionalHeader.ImageBase || 'N/A'}</p>
+              <p><span class="font-mono text-gray-600">DLL Characteristics:</span> ${optionalHeader.DllCharacteristics?.flags?.join(', ') || 'N/A'}</p>
+            </div>
+          </div>
+          ` : ''}
+        </div>
+      `;
+    }
+
+    function buildELFSpecificSection(formatSpecific) {
+      const elfHeader = formatSpecific.elf_header || {};
+      const programHeaders = formatSpecific.program_headers || [];
+      const dynamic = formatSpecific.dynamic || [];
+
+      return `
+        <div class="bg-white rounded-2xl shadow-lg p-6">
+          <h2 class="text-xl font-bold text-[#8E793E] mb-4">ELF-Specific Details</h2>
+          
+          ${Object.keys(elfHeader).length ? `
+          <div class="mb-4">
+            <h3 class="font-semibold text-gray-700 mb-2">ELF Header</h3>
+            <div class="bg-gray-50 rounded p-3 text-sm space-y-1">
+              <p><span class="font-mono text-gray-600">Class:</span> ${elfHeader.e_ident?.EI_CLASS || 'N/A'}</p>
+              <p><span class="font-mono text-gray-600">Data:</span> ${elfHeader.e_ident?.EI_DATA || 'N/A'}</p>
+              <p><span class="font-mono text-gray-600">Type:</span> ${elfHeader.e_type || 'N/A'}</p>
+              <p><span class="font-mono text-gray-600">Machine:</span> ${elfHeader.e_machine || 'N/A'}</p>
+              <p><span class="font-mono text-gray-600">Entry Point:</span> 0x${(elfHeader.e_entry || 0).toString(16)}</p>
+            </div>
+          </div>
+          ` : ''}
+
+          ${programHeaders.length ? `
+          <div class="mb-4">
+            <h3 class="font-semibold text-gray-700 mb-2">Program Headers (${programHeaders.length})</h3>
+            <details>
+              <summary class="cursor-pointer text-sm font-semibold text-[#AD974F] hover:text-[#8E793E]">
+                View Program Headers
+              </summary>
+              <div class="mt-2 overflow-x-auto">
+                <table class="w-full text-xs">
+                  <thead class="bg-gray-100">
+                    <tr class="text-left">
+                      <th class="p-2">Type</th>
+                      <th class="p-2">Flags</th>
+                      <th class="p-2">Virtual Address</th>
+                      <th class="p-2">File Size</th>
+                      <th class="p-2">Memory Size</th>
+                    </tr>
+                  </thead>
+                  <tbody class="font-mono">
+                    ${programHeaders.map(ph => `
+                      <tr class="border-t border-gray-200">
+                        <td class="p-2">${ph.p_type || 'N/A'}</td>
+                        <td class="p-2">${ph.p_flags || 'N/A'}</td>
+                        <td class="p-2">0x${(ph.p_vaddr || 0).toString(16)}</td>
+                        <td class="p-2">${ph.p_filesz || 0}</td>
+                        <td class="p-2">${ph.p_memsz || 0}</td>
+                      </tr>
+                    `).join("")}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+          ` : ''}
+
+          ${formatSpecific.interpreter ? `
+          <div class="mb-4">
+            <h3 class="font-semibold text-gray-700 mb-2">Interpreter</h3>
+            <div class="bg-gray-50 rounded p-3 text-sm font-mono">
+              ${formatSpecific.interpreter}
+            </div>
+          </div>
+          ` : ''}
+        </div>
+      `;
     }
 
     function formatBytes(bytes) {
@@ -355,7 +1873,6 @@
       const i = Math.floor(Math.log(bytes) / Math.log(k));
       return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
     }
-
 
     loadReport();
   </script>
