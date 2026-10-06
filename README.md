@@ -331,3 +331,5 @@ Before running INFLEX, ensure your environment satisfies the following dependenc
 
 ## Acknowledgement
 This research was designed and supported by a DARPA Young Faculty Award under Cooperative Agreement No. D25AC00384-00 granted to Dr. Bramwell Brizendine. The content of this work does not necessarily reflect the position or the policy of the Government nor the Defense Advanced Research Projects Agency.
+
+Much of INFLEX was created by Luke Bower as part of this research to support the DARPA YFA, and in satisfaction of his Master's Thesis located at https://louis.uah.edu/uah-theses/858/ .
